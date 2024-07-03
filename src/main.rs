@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use ash::{khr, vk};
 use either::Either;
 use myndgera::{
-    Device, FragmentOutputDesc, FragmentShaderDesc, HostBuffer, Instance, PipelineArena,
+    Device, FragmentOutputDesc, FragmentShaderDesc, HostBuffer, Instance, PipelineArena, Recorder,
     RenderHandle, ShaderKind, ShaderSource, Surface, Swapchain, UserEvent, VertexInputDesc,
     VertexShaderDesc, Watcher,
 };
@@ -21,7 +21,8 @@ use winit::{
 struct AppInit {
     time: std::time::Instant,
     window: Window,
-    watcher: Watcher,
+    file_watcher: Watcher,
+    recorder: Recorder,
 
     host_buffer: HostBuffer<[f32; 4]>,
 
@@ -45,6 +46,7 @@ impl AppInit {
     ) -> Result<Self> {
         let window = event_loop.create_window(window_attributes)?;
         let watcher = Watcher::new(proxy)?;
+        let recorder = Recorder::new();
 
         let instance = Instance::new(Some(&window))?;
         let surface = instance.create_surface(&window)?;
@@ -86,7 +88,8 @@ impl AppInit {
         )?;
 
         Ok(Self {
-            watcher,
+            recorder,
+            file_watcher: watcher,
             time: std::time::Instant::now(),
             host_buffer,
             pipeline_arena,
@@ -108,7 +111,7 @@ impl AppInit {
         }
 
         let resolved = {
-            let mapping = self.watcher.include_mapping.lock();
+            let mapping = self.file_watcher.include_mapping.lock();
             mapping[&path].clone()
         };
 
@@ -221,6 +224,10 @@ impl ApplicationHandler<UserEvent> for AppInit {
     }
 
     fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.recorder.close_thread();
+        if let Some(handle) = self.recorder.thread_handle.take() {
+            let _ = handle.join();
+        }
         let _ = unsafe { self.device.device_wait_idle() };
     }
 

@@ -1,7 +1,9 @@
+use anyhow::{Context, Result};
 use std::sync::Arc;
 
-use anyhow::Context;
 use ash::{khr, prelude::VkResult, vk};
+
+use crate::ManagedImage;
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
@@ -54,8 +56,10 @@ impl Device {
         command_buffer: &vk::CommandBuffer,
         src_image: &vk::Image,
         src_extent: vk::Extent2D,
+        src_orig_layout: vk::ImageLayout,
         dst_image: &vk::Image,
         dst_extent: vk::Extent2D,
+        dst_orig_layout: vk::ImageLayout,
     ) {
         let subresource_range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -70,7 +74,7 @@ impl Device {
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
+            .old_layout(src_orig_layout)
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         let dst_barrier = vk::ImageMemoryBarrier2::default()
             .subresource_range(subresource_range)
@@ -78,7 +82,7 @@ impl Device {
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
+            .old_layout(dst_orig_layout)
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL);
         let image_memory_barriers = &[src_barrier, dst_barrier];
         let dependency_info =
@@ -124,15 +128,101 @@ impl Device {
         let src_barrier = src_barrier
             .src_access_mask(vk::AccessFlags2::MEMORY_READ)
             .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL);
-        let dst_barrier = src_barrier
+            .new_layout(src_orig_layout);
+        let dst_barrier = dst_barrier
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL);
+            .new_layout(match dst_orig_layout {
+                vk::ImageLayout::UNDEFINED => vk::ImageLayout::GENERAL,
+                _ => dst_orig_layout,
+            });
         let image_memory_barriers = &[src_barrier, dst_barrier];
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
         unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) };
+    }
+
+    pub fn capture_image_data(
+        &self,
+        queue: &vk::Queue,
+        src_image: &vk::Image,
+        extent: vk::Extent2D,
+        callback: impl FnOnce(ManagedImage) + Send + 'static,
+    ) -> Result<()> {
+        let now = std::time::Instant::now();
+        let dst_image = ManagedImage::new(
+            self,
+            &vk::ImageCreateInfo::default()
+                .extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                })
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_SRGB)
+                .usage(vk::ImageUsageFlags::TRANSFER_DST)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .mip_levels(1)
+                .array_layers(1)
+                .tiling(vk::ImageTiling::LINEAR),
+            vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+
+        let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
+
+        let command_pool = unsafe {
+            self.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+                    .queue_family_index(self.main_queue_family_idx),
+                None,
+            )?
+        };
+        let command_buffer = unsafe {
+            self.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(command_pool)
+                    .command_buffer_count(1)
+                    .level(vk::CommandBufferLevel::PRIMARY),
+            )?[0]
+        };
+
+        unsafe {
+            self.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?
+        };
+
+        self.blit_image(
+            &command_buffer,
+            src_image,
+            extent,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            &dst_image.image,
+            extent,
+            vk::ImageLayout::UNDEFINED,
+        );
+
+        unsafe { self.end_command_buffer(command_buffer) }?;
+
+        let submit_info =
+            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+        unsafe { self.queue_submit(*queue, &[submit_info], fence)? };
+        unsafe { self.wait_for_fences(&[fence], true, u64::MAX)? };
+
+        println!("Blit image: {:?}", now.elapsed());
+
+        callback(dst_image);
+
+        unsafe {
+            self.destroy_fence(fence, None);
+            self.free_command_buffers(command_pool, &[command_buffer]);
+            self.destroy_command_pool(command_pool, None);
+        }
+
+        Ok(())
     }
 
     pub fn create_host_buffer<T>(

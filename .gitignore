@@ -3,4 +3,6 @@
 default.cap
 _typos.toml
 vkvia.html
+screenshots/
+recordings/
 .clang-format
