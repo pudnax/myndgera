@@ -6,7 +6,7 @@ use ash::{khr, vk};
 use either::Either;
 use myndgera::{
     Device, HostBuffer, Instance, PipelineArena, RenderHandle, RenderPipeline, ShaderCompiler,
-    Surface, Swapchain, UserEvent, Watcher,
+    ShaderSource, Surface, Swapchain, UserEvent, Watcher,
 };
 use shaderc::ShaderKind;
 use winit::{
@@ -22,13 +22,11 @@ struct AppInit {
     time: std::time::Instant,
     window: Window,
     watcher: Watcher,
-    shader_compiler: ShaderCompiler,
 
     host_buffer: HostBuffer<[f32; 4]>,
 
     pipeline_handle: RenderHandle,
     pipeline_arena: PipelineArena,
-    pipeline_cache: vk::PipelineCache,
 
     queue: vk::Queue,
     transfer_queue: vk::Queue,
@@ -39,15 +37,6 @@ struct AppInit {
     instance: Instance,
 }
 
-impl Drop for AppInit {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .destroy_pipeline_cache(self.pipeline_cache, None);
-        }
-    }
-}
-
 impl AppInit {
     fn new(
         event_loop: &winit::event_loop::ActiveEventLoop,
@@ -55,7 +44,7 @@ impl AppInit {
         window_attributes: WindowAttributes,
     ) -> Result<Self> {
         let window = event_loop.create_window(window_attributes)?;
-        let mut watcher = Watcher::new(proxy)?;
+        let watcher = Watcher::new(proxy)?;
 
         let instance = Instance::new(Some(&window))?;
         let surface = instance.create_surface(&window)?;
@@ -64,74 +53,22 @@ impl AppInit {
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
         let swapchain = Swapchain::new(&device, &surface, swapchain_loader)?;
 
-        let shader_compiler = ShaderCompiler::new(watcher.clone())?;
-
-        let pipeline_cache =
-            unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)? };
-
         let host_buffer = device.create_host_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
-        let rpipeline = RenderPipeline::new(
-            &device,
-            &shader_compiler,
-            &mut watcher,
-            swapchain.format(),
-            &pipeline_cache,
-        )?;
         let mut pipeline_arena = PipelineArena::new(&device, watcher.clone())?;
-        let pipeline_handle = pipeline_arena.render.pipelines.insert(rpipeline);
-        let path = PathBuf::new()
-            .join("shaders/trig.vert.glsl")
-            .canonicalize()
-            .unwrap();
-        pipeline_arena
-            .path_mapping
-            .entry(path.clone())
-            .or_insert_with_key(|path| {
-                let _ = watcher.watch_file(path);
-                AHashSet::new()
-            })
-            .insert(Either::Left(pipeline_handle));
-        {
-            let mut mapping = watcher.include_mapping.lock();
-            mapping
-                .entry(path.clone())
-                .or_default()
-                .insert(path.clone());
-        }
-        let path = PathBuf::new()
-            .join("shaders/trig.frag.glsl")
-            .canonicalize()
-            .unwrap();
-        pipeline_arena
-            .path_mapping
-            .entry(path.clone())
-            .or_insert_with_key(|path| {
-                let _ = watcher.watch_file(path);
-                AHashSet::new()
-            })
-            .insert(Either::Left(pipeline_handle));
-        {
-            let mut mapping = watcher.include_mapping.lock();
-            mapping
-                .entry(path.clone())
-                .or_default()
-                .insert(path.clone());
-        }
+        let pipeline_handle = pipeline_arena.create_render_pipeline(swapchain.format())?;
 
         dbg!(&watcher.include_mapping.lock());
 
         Ok(Self {
-            shader_compiler,
             watcher,
             time: std::time::Instant::now(),
             host_buffer,
             pipeline_arena,
             pipeline_handle,
-            pipeline_cache,
             window,
             surface,
             swapchain,
@@ -153,36 +90,22 @@ impl AppInit {
             mapping[&path].clone()
         };
 
-        for res in resolved {
-            let Some(x) = self.pipeline_arena.path_mapping.get(&res) else {
-                bail!("No such shader: {res:?}");
-            };
-            let kind = match res.file_stem().and_then(|s| s.to_str()) {
-                Some(s) if s.ends_with("frag") => shaderc::ShaderKind::Fragment,
-                Some(s) if s.ends_with("vert") => shaderc::ShaderKind::Vertex,
-                Some(s) if s.ends_with("comp") => shaderc::ShaderKind::Compute,
-                None | Some(_) => {
-                    bail!("Unsupported shader!\n\tpath: {:?}", res);
-                }
+        for ShaderSource { path, kind } in resolved {
+            let Some(x) = self.pipeline_arena.path_mapping.get(&path) else {
+                bail!("No such shader: {path:?}");
             };
 
             for handles in x.iter() {
+                let cache = &self.pipeline_arena.pipeline_cache;
+                let compiler = &self.pipeline_arena.shader_compiler;
                 match handles {
                     Either::Left(handle) => {
                         let pip = &mut self.pipeline_arena.render.pipelines[*handle];
-                        if kind == ShaderKind::Fragment {
-                            pip.reload_fragment_lib(
-                                &self.shader_compiler,
-                                &self.pipeline_cache,
-                                &res,
-                            )?;
+                        if kind == myndgera::ShaderKind::Fragment {
+                            pip.reload_fragment_lib(compiler, cache, &path)?;
                         }
-                        if kind == ShaderKind::Vertex {
-                            pip.reload_vertex_lib(
-                                &self.shader_compiler,
-                                &self.pipeline_cache,
-                                &res,
-                            )?;
+                        if kind == myndgera::ShaderKind::Vertex {
+                            pip.reload_vertex_lib(compiler, cache, &path)?;
                         }
                     }
                     Either::Right(_compute) => {}

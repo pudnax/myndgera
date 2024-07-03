@@ -1,20 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::{device, Watcher};
-use ahash::AHashSet;
+use crate::Watcher;
 use anyhow::{Context, Result};
 use shaderc::{CompilationArtifact, ShaderKind};
 
-const SHADER_PATH: &str = "shaders";
+const SHADER_DIR: &str = "shaders";
 
 pub struct ShaderCompiler {
     compiler: shaderc::Compiler,
     options: shaderc::CompileOptions<'static>,
-    watcher: Watcher,
 }
 
 impl ShaderCompiler {
-    pub fn new(watcher: Watcher) -> Result<Self> {
+    pub fn new(watcher: &Watcher) -> Result<Self> {
         let mut options =
             shaderc::CompileOptions::new().context("Failed to create shader compiler options")?;
         options.set_target_env(
@@ -28,43 +26,38 @@ impl ShaderCompiler {
         let watcher_copy = watcher.clone();
         options.set_include_callback(move |name, include_type, source_file, depth| {
             let path = if include_type == shaderc::IncludeType::Relative {
-                Path::new(Path::new(source_file).parent().unwrap()).join(name)
+                Path::new(source_file).parent().unwrap().join(name)
             } else {
-                Path::new(SHADER_PATH).join(name)
+                Path::new(SHADER_DIR).join(name)
             };
+            // TODO:  and recreate
             match std::fs::read_to_string(&path) {
                 Ok(glsl_code) => {
                     let include_path = path.canonicalize().unwrap();
-                    let source_path = Path::new(SHADER_PATH)
+                    {
+                        let mut watcher = watcher_copy.watcher.lock();
+                        let _ = watcher
+                            .watcher()
+                            .watch(&include_path, notify::RecursiveMode::NonRecursive);
+                    }
+                    let source_path = Path::new(SHADER_DIR)
                         .join(source_file)
                         .canonicalize()
                         .unwrap();
+                    dbg!(&include_path);
+                    dbg!(&include_type);
+                    dbg!(&source_path);
+                    dbg!(&depth);
+                    println!();
                     {
-                        let mut watcher_guard = watcher_copy.watcher.lock();
-                        let watcher = watcher_guard.watcher();
                         let mut mapping = watcher_copy.include_mapping.lock();
-                        if depth > 1 {
-                            let sources: Vec<_> = mapping[&source_path].iter().cloned().collect();
-                            for source in sources {
-                                mapping
-                                    .entry(include_path.clone())
-                                    .or_insert_with_key(|path| {
-                                        // TODO: move up and recreate
-                                        let _ = watcher
-                                            .watch(path, notify::RecursiveMode::NonRecursive);
-                                        AHashSet::new()
-                                    })
-                                    .insert(source);
-                            }
-                        } else {
+                        dbg!(&mapping);
+                        let sources: Vec<_> = mapping[&source_path].iter().cloned().collect();
+                        for source in sources {
                             mapping
-                                .entry(include_path)
-                                .or_insert_with_key(|path| {
-                                    let _ =
-                                        watcher.watch(path, notify::RecursiveMode::NonRecursive);
-                                    AHashSet::new()
-                                })
-                                .insert(source_path);
+                                .entry(include_path.clone())
+                                .or_default()
+                                .insert(source);
                         }
                     }
                     Ok(shaderc::ResolvedInclude {
@@ -82,7 +75,6 @@ impl ShaderCompiler {
         Ok(Self {
             compiler: shaderc::Compiler::new().unwrap(),
             options,
-            watcher,
         })
     }
 

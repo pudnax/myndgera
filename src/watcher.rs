@@ -10,14 +10,14 @@ use std::{
     time::Duration,
 };
 
-use crate::UserEvent;
+use crate::{ShaderSource, UserEvent};
 
 use parking_lot::Mutex;
 
 #[derive(Clone)]
 pub struct Watcher {
     pub watcher: Arc<Mutex<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
-    pub include_mapping: Arc<Mutex<AHashMap<PathBuf, AHashSet<PathBuf>>>>,
+    pub include_mapping: Arc<Mutex<AHashMap<PathBuf, AHashSet<ShaderSource>>>>,
 }
 
 impl Watcher {

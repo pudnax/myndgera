@@ -1,7 +1,6 @@
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use either::Either;
-use shaderc::ShaderKind;
 use slotmap::SlotMap;
 use std::{
     path::{Path, PathBuf},
@@ -13,7 +12,7 @@ use ash::{
     vk::{self},
 };
 
-use crate::{Device, ShaderCompiler, Watcher};
+use crate::{Device, ShaderCompiler, ShaderKind, ShaderSource, Watcher};
 
 pub struct ComputePipeline {
     pub layout: vk::PipelineLayout,
@@ -42,16 +41,15 @@ pub struct RenderPipeline {
 
 impl RenderPipeline {
     pub fn new(
-        device: &crate::Device,
+        device: &Arc<ash::Device>,
         shader_compiler: &ShaderCompiler,
-        watcher: &mut Watcher,
-        surface_format: vk::Format,
         cache: &vk::PipelineCache,
+        surface_format: vk::Format,
     ) -> Result<Self> {
-        let vs_bytes = shader_compiler.compile("shaders/trig.vert.glsl", ShaderKind::Vertex)?;
-        let fs_bytes = shader_compiler.compile("shaders/trig.frag.glsl", ShaderKind::Fragment)?;
-        watcher.watch_file("shaders/trig.vert.glsl")?;
-        watcher.watch_file("shaders/trig.frag.glsl")?;
+        let vs_bytes =
+            shader_compiler.compile("shaders/trig.vert.glsl", shaderc::ShaderKind::Vertex)?;
+        let fs_bytes =
+            shader_compiler.compile("shaders/trig.frag.glsl", shaderc::ShaderKind::Fragment)?;
 
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
@@ -71,7 +69,7 @@ impl RenderPipeline {
                 .primitive_restart_enable(false);
             let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
-            create_library(device, cache, GPF::VERTEX_INPUT_INTERFACE, |desc| {
+            create_library(&device, cache, GPF::VERTEX_INPUT_INTERFACE, |desc| {
                 desc.vertex_input_state(&vertex_input)
                     .input_assembly_state(&input_ass)
             })?
@@ -95,7 +93,7 @@ impl RenderPipeline {
                 .viewport_count(1)
                 .scissor_count(1);
 
-            create_library(device, cache, GPF::PRE_RASTERIZATION_SHADERS, |desc| {
+            create_library(&device, cache, GPF::PRE_RASTERIZATION_SHADERS, |desc| {
                 desc.layout(pipeline_layout)
                     .stages(std::slice::from_ref(&shader_stage))
                     .dynamic_state(&dynamic_state)
@@ -114,7 +112,7 @@ impl RenderPipeline {
 
             let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default();
 
-            create_library(device, cache, GPF::FRAGMENT_SHADER, |desc| {
+            create_library(&device, cache, GPF::FRAGMENT_SHADER, |desc| {
                 desc.layout(pipeline_layout)
                     .stages(std::slice::from_ref(&shader_stage))
                     .depth_stencil_state(&depth_stencil_state)
@@ -129,32 +127,24 @@ impl RenderPipeline {
             let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
                 .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-            create_library(device, cache, GPF::FRAGMENT_OUTPUT_INTERFACE, |desc| {
+            create_library(&device, cache, GPF::FRAGMENT_OUTPUT_INTERFACE, |desc| {
                 desc.multisample_state(&multisample_state)
                     .push_next(&mut dyn_render)
             })?
         };
 
-        let libraries = [
-            vertex_input_lib,
-            vertex_shader_lib,
-            fragment_shader_lib,
-            fragment_output_lib,
-        ];
-        let pipeline = {
-            let mut linking_info =
-                vk::PipelineLibraryCreateInfoKHR::default().libraries(&libraries);
-            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-                .flags(vk::PipelineCreateFlags::LINK_TIME_OPTIMIZATION_EXT)
-                .layout(pipeline_layout)
-                .push_next(&mut linking_info);
-            let pipeline =
-                unsafe { device.create_graphics_pipelines(*cache, &[pipeline_info], None) };
-            pipeline.map_err(|(_, err)| err)?[0]
-        };
+        let pipeline = Self::link_libraries(
+            &device,
+            cache,
+            &pipeline_layout,
+            &vertex_input_lib,
+            &vertex_shader_lib,
+            &fragment_shader_lib,
+            &fragment_output_lib,
+        )?;
 
         Ok(Self {
-            device: device.device.clone(),
+            device: device.clone(),
             layout: pipeline_layout,
             pipeline,
             vertex_input_lib,
@@ -170,7 +160,7 @@ impl RenderPipeline {
         pipeline_cache: &vk::PipelineCache,
         shader_path: impl AsRef<Path>,
     ) -> Result<()> {
-        let vs_bytes = shader_compiler.compile(shader_path, ShaderKind::Vertex)?;
+        let vs_bytes = shader_compiler.compile(shader_path, shaderc::ShaderKind::Vertex)?;
 
         unsafe { self.device.destroy_pipeline(self.vertex_shader_lib, None) };
 
@@ -224,7 +214,7 @@ impl RenderPipeline {
         pipeline_cache: &vk::PipelineCache,
         shader_path: impl AsRef<Path>,
     ) -> Result<()> {
-        let fs_bytes = shader_compiler.compile(shader_path, ShaderKind::Fragment)?;
+        let fs_bytes = shader_compiler.compile(shader_path, shaderc::ShaderKind::Fragment)?;
 
         unsafe { self.device.destroy_pipeline(self.fragment_shader_lib, None) };
 
@@ -341,13 +331,25 @@ pub struct PipelineArena {
     pub render: RenderArena,
     compute: ComputeArena,
     pub path_mapping: AHashMap<PathBuf, AHashSet<Either<RenderHandle, ComputeHandle>>>,
-    shader_compiler: ShaderCompiler,
+    pub pipeline_cache: vk::PipelineCache,
+    pub shader_compiler: ShaderCompiler,
     file_watcher: Watcher,
     device: Arc<ash::Device>,
 }
 
+impl Drop for PipelineArena {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .destroy_pipeline_cache(self.pipeline_cache, None)
+        };
+    }
+}
+
 impl PipelineArena {
     pub fn new(device: &Device, file_watcher: Watcher) -> Result<Self> {
+        let pipeline_cache =
+            unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)? };
         Ok(Self {
             render: RenderArena {
                 pipelines: SlotMap::with_key(),
@@ -355,11 +357,45 @@ impl PipelineArena {
             compute: ComputeArena {
                 pipelines: SlotMap::with_key(),
             },
-            shader_compiler: ShaderCompiler::new(file_watcher.clone())?,
+            shader_compiler: ShaderCompiler::new(&file_watcher)?,
+            pipeline_cache,
             file_watcher,
             path_mapping: AHashMap::new(),
             device: device.device.clone(),
         })
+    }
+
+    pub fn create_render_pipeline(&mut self, format: vk::Format) -> Result<RenderHandle> {
+        let vs_path = Path::new("shaders/trig.vert.glsl").canonicalize()?;
+        let fs_path = Path::new("shaders/trig.frag.glsl").canonicalize()?;
+        self.file_watcher.watch_file(&vs_path)?;
+        self.file_watcher.watch_file(&fs_path)?;
+        for (path, kind) in [
+            (vs_path.clone(), ShaderKind::Vertex),
+            (fs_path.clone(), ShaderKind::Fragment),
+        ] {
+            let mut mapping = self.file_watcher.include_mapping.lock();
+            mapping
+                .entry(path.clone())
+                .or_default()
+                .insert(ShaderSource { path, kind });
+        }
+        let pipeline = RenderPipeline::new(
+            &self.device,
+            &self.shader_compiler,
+            &self.pipeline_cache,
+            format,
+        )?;
+        let handle = self.render.pipelines.insert(pipeline);
+        self.path_mapping
+            .entry(vs_path)
+            .or_default()
+            .insert(Either::Left(handle));
+        self.path_mapping
+            .entry(fs_path)
+            .or_default()
+            .insert(Either::Left(handle));
+        Ok(handle)
     }
 
     pub fn get_pipeline<H: Handle>(&self, handle: H) -> &H::Pipeline {
