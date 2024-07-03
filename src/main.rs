@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 
-use ahash::AHashSet;
 use anyhow::{bail, Result};
 use ash::{khr, vk};
 use either::Either;
 use myndgera::{
-    Device, HostBuffer, Instance, PipelineArena, RenderHandle, RenderPipeline, ShaderCompiler,
+    Device, HostBuffer, Instance, PipelineArena, RenderHandle,
     ShaderSource, Surface, Swapchain, UserEvent, Watcher,
 };
-use shaderc::ShaderKind;
 use winit::{
     application::ApplicationHandler,
     event::{KeyEvent, WindowEvent},
