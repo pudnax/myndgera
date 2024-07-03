@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use ash::{khr, prelude::VkResult, vk};
 
 pub struct Device {
@@ -28,6 +29,110 @@ impl Device {
         unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         }
+    }
+
+    pub fn alloc_memory(
+        &self,
+        memory_reqs: vk::MemoryRequirements,
+        usage: vk::MemoryPropertyFlags,
+    ) -> anyhow::Result<vk::DeviceMemory> {
+        let memory_type_index =
+            find_memory_type_index(&self.memory_properties, memory_reqs.memory_type_bits, usage)
+                .context("Failed to find suitable memory")?;
+
+        let mut alloc_flag =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(memory_reqs.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut alloc_flag);
+        Ok(unsafe { self.allocate_memory(&allocate_info, None)? })
+    }
+
+    pub fn blit_image(
+        &self,
+        command_buffer: &vk::CommandBuffer,
+        src_image: &vk::Image,
+        src_extent: vk::Extent2D,
+        dst_image: &vk::Image,
+        dst_extent: vk::Extent2D,
+    ) {
+        let subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: vk::REMAINING_MIP_LEVELS,
+            base_array_layer: 0,
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+        };
+        let src_barrier = vk::ImageMemoryBarrier2::default()
+            .subresource_range(subresource_range)
+            .image(*src_image)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+        let dst_barrier = vk::ImageMemoryBarrier2::default()
+            .subresource_range(subresource_range)
+            .image(*dst_image)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+        let image_memory_barriers = &[src_barrier, dst_barrier];
+        let dependency_info =
+            vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
+        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) };
+
+        let src_offsets = [
+            vk::Offset3D { x: 0, y: 0, z: 0 },
+            vk::Offset3D {
+                x: src_extent.width as _,
+                y: src_extent.height as _,
+                z: 1,
+            },
+        ];
+        let dst_offsets = [
+            vk::Offset3D { x: 0, y: 0, z: 0 },
+            vk::Offset3D {
+                x: dst_extent.width as _,
+                y: dst_extent.height as _,
+                z: 1,
+            },
+        ];
+        let subresource_layer = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_array_layer: 0,
+            layer_count: 1,
+            mip_level: 0,
+        };
+        let regions = [vk::ImageBlit2::default()
+            .src_offsets(src_offsets)
+            .dst_offsets(dst_offsets)
+            .src_subresource(subresource_layer)
+            .dst_subresource(subresource_layer)];
+        let blit_info = vk::BlitImageInfo2::default()
+            .src_image(*src_image)
+            .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .dst_image(*dst_image)
+            .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .regions(&regions)
+            .filter(vk::Filter::NEAREST);
+        unsafe { self.cmd_blit_image2(*command_buffer, &blit_info) };
+
+        let src_barrier = src_barrier
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL);
+        let dst_barrier = src_barrier
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL);
+        let image_memory_barriers = &[src_barrier, dst_barrier];
+        let dependency_info =
+            vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
+        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) };
     }
 
     pub fn create_host_buffer<T>(

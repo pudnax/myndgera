@@ -61,17 +61,17 @@ impl Frame {
 }
 
 pub struct FrameGuard {
-    pub frame: Frame,
+    frame: Frame,
     extent: vk::Extent2D,
     image_idx: usize,
     device: Arc<ash::Device>,
-    pub ext: Arc<DeviceExt>,
+    ext: Arc<DeviceExt>,
 }
 
 pub struct Swapchain {
     images: Vec<vk::Image>,
     views: Vec<vk::ImageView>,
-    pub frames: VecDeque<Frame>,
+    frames: VecDeque<Frame>,
     command_pool: vk::CommandPool,
     current_image: usize,
     format: vk::SurfaceFormatKHR,
@@ -93,6 +93,10 @@ impl Swapchain {
 
     pub fn format(&self) -> vk::Format {
         self.format.format
+    }
+
+    pub fn extent(&self) -> vk::Extent2D {
+        self.extent
     }
 
     pub fn new(
@@ -117,7 +121,8 @@ impl Swapchain {
             .min(capabilities.max_image_count);
 
         let queue_family_index = [device.main_queue_family_idx];
-        let swapchain_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+        let swapchain_usage =
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
         let extent = capabilities.current_extent;
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
@@ -287,7 +292,8 @@ impl Swapchain {
         unsafe {
             self.device.begin_command_buffer(
                 frame.command_buffer,
-                &vk::CommandBufferBeginInfo::default(),
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?
         };
 

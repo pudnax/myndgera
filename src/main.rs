@@ -1,3 +1,4 @@
+use core::panic;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
@@ -54,7 +55,9 @@ impl AppInit {
 
         let host_buffer = device.create_host_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL
+                | vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
         let mut pipeline_arena = PipelineArena::new(&device, watcher.clone())?;
@@ -257,7 +260,7 @@ enum AppEnum {
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default();
+        let window_attributes = WindowAttributes::default().with_title("myndgera");
         match self.inner {
             AppEnum::Uninitialized => {
                 self.inner = AppEnum::Init(

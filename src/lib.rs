@@ -1,6 +1,7 @@
 mod device;
 mod instance;
 mod pipeline_arena;
+mod screenshot;
 mod shader_compiler;
 mod surface;
 mod swapchain;
@@ -15,6 +16,8 @@ pub use self::{
     swapchain::Swapchain,
     watcher::Watcher,
 };
+
+pub use screenshot::make_screenshot;
 
 #[derive(Debug)]
 pub enum UserEvent {

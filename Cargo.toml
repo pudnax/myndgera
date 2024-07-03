@@ -17,4 +17,6 @@ notify-debouncer-mini = "0.4"
 ahash = "0.8"
 slotmap = "1.0"
 either = "1.13"
-parking_lot = { version = "0.12", features = ["deadlock_detection"] }
+parking_lot = "0.12"
+chrono = "0.4.38"
+png = "0.17.13"
