@@ -4,8 +4,9 @@ use anyhow::{bail, Result};
 use ash::{khr, vk};
 use either::Either;
 use myndgera::{
-    Device, HostBuffer, Instance, PipelineArena, RenderHandle,
-    ShaderSource, Surface, Swapchain, UserEvent, Watcher,
+    Device, FragmentOutputDesc, FragmentShaderDesc, HostBuffer, Instance, PipelineArena,
+    RenderHandle, ShaderKind, ShaderSource, Surface, Swapchain, UserEvent, VertexInputDesc,
+    VertexShaderDesc, Watcher,
 };
 use winit::{
     application::ApplicationHandler,
@@ -57,9 +58,29 @@ impl AppInit {
         )?;
 
         let mut pipeline_arena = PipelineArena::new(&device, watcher.clone())?;
-        let pipeline_handle = pipeline_arena.create_render_pipeline(swapchain.format())?;
 
-        dbg!(&watcher.include_mapping.lock());
+        let vertex_shader_desc = VertexShaderDesc {
+            shader_path: "shaders/trig.vert.glsl".into(),
+            ..Default::default()
+        };
+        let fragment_shader_desc = FragmentShaderDesc {
+            shader_path: "shaders/trig.frag.glsl".into(),
+        };
+        let fragment_output_desc = FragmentOutputDesc {
+            surface_format: swapchain.format(),
+            ..Default::default()
+        };
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .size(size_of::<u64>() as _);
+        let pipeline_handle = pipeline_arena.create_render_pipeline(
+            &VertexInputDesc::default(),
+            &vertex_shader_desc,
+            &fragment_shader_desc,
+            &fragment_output_desc,
+            &[push_constant_range],
+            &[],
+        )?;
 
         Ok(Self {
             watcher,
@@ -89,22 +110,25 @@ impl AppInit {
         };
 
         for ShaderSource { path, kind } in resolved {
-            let Some(x) = self.pipeline_arena.path_mapping.get(&path) else {
-                bail!("No such shader: {path:?}");
-            };
-
-            for handles in x.iter() {
+            let handles = &self.pipeline_arena.path_mapping[&path];
+            for handle in handles {
                 let cache = &self.pipeline_arena.pipeline_cache;
                 let compiler = &self.pipeline_arena.shader_compiler;
-                match handles {
+                match handle {
                     Either::Left(handle) => {
-                        let pip = &mut self.pipeline_arena.render.pipelines[*handle];
-                        if kind == myndgera::ShaderKind::Fragment {
-                            pip.reload_fragment_lib(compiler, cache, &path)?;
+                        let pipeline = &mut self.pipeline_arena.render.pipelines[*handle];
+                        match kind {
+                            ShaderKind::Vertex => {
+                                pipeline.reload_vertex_lib(compiler, cache, &path)?
+                            }
+                            ShaderKind::Fragment => {
+                                pipeline.reload_fragment_lib(compiler, cache, &path)?
+                            }
+                            ShaderKind::Compute => {
+                                bail!("Supplied compute shader into render pipeline!")
+                            }
                         }
-                        if kind == myndgera::ShaderKind::Vertex {
-                            pip.reload_vertex_lib(compiler, cache, &path)?;
-                        }
+                        pipeline.link(cache)?;
                     }
                     Either::Right(_compute) => {}
                 }
@@ -159,7 +183,7 @@ impl ApplicationHandler<UserEvent> for AppInit {
                 let pipeline = self.pipeline_arena.get_pipeline(self.pipeline_handle);
                 frame.push_constant(
                     pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     &[self.host_buffer.address],
                 );
                 frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);

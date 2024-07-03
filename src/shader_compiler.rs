@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::Watcher;
 use anyhow::{Context, Result};
-use shaderc::{CompilationArtifact, ShaderKind};
+use shaderc::{CompilationArtifact, IncludeType, ShaderKind};
 
 const SHADER_DIR: &str = "shaders";
 
@@ -24,13 +24,12 @@ impl ShaderCompiler {
         options.set_generate_debug_info();
 
         let watcher_copy = watcher.clone();
-        options.set_include_callback(move |name, include_type, source_file, depth| {
-            let path = if include_type == shaderc::IncludeType::Relative {
-                Path::new(source_file).parent().unwrap().join(name)
-            } else {
-                Path::new(SHADER_DIR).join(name)
+        options.set_include_callback(move |name, include_type, source_file, _depth| {
+            let path = match include_type {
+                IncludeType::Relative => Path::new(source_file).parent().unwrap().join(name),
+                IncludeType::Standard => Path::new(SHADER_DIR).join(name),
             };
-            // TODO:  and recreate
+            // TODO: recreate dependencies in case someone removes includes
             match std::fs::read_to_string(&path) {
                 Ok(glsl_code) => {
                     let include_path = path.canonicalize().unwrap();
@@ -44,14 +43,8 @@ impl ShaderCompiler {
                         .join(source_file)
                         .canonicalize()
                         .unwrap();
-                    dbg!(&include_path);
-                    dbg!(&include_type);
-                    dbg!(&source_path);
-                    dbg!(&depth);
-                    println!();
                     {
                         let mut mapping = watcher_copy.include_mapping.lock();
-                        dbg!(&mapping);
                         let sources: Vec<_> = mapping[&source_path].iter().cloned().collect();
                         for source in sources {
                             mapping

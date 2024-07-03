@@ -29,6 +29,104 @@ impl Drop for ComputePipeline {
     }
 }
 
+impl ComputePipeline {
+    fn new(
+        device: &Arc<ash::Device>,
+        shader_compiler: &ShaderCompiler,
+        cache: &vk::PipelineCache,
+        shader_path: impl AsRef<Path>,
+        push_constant_ranges: &[vk::PushConstantRange],
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+    ) -> Result<Self> {
+        let cs_bytes = shader_compiler.compile(&shader_path, shaderc::ShaderKind::Compute)?;
+
+        let pipeline_layout = unsafe {
+            device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(descriptor_set_layouts)
+                    .push_constant_ranges(push_constant_ranges),
+                None,
+            )?
+        };
+
+        let mut shader_module = vk::ShaderModuleCreateInfo::default().code(cs_bytes.as_binary());
+        let shader_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .name(c"main")
+            .push_next(&mut shader_module);
+
+        let create_info = vk::ComputePipelineCreateInfo::default()
+            .layout(pipeline_layout)
+            .stage(shader_stage);
+        let pipeline = unsafe { device.create_compute_pipelines(*cache, &[create_info], None) };
+        let pipeline = pipeline.map_err(|(_, err)| err)?[0];
+
+        Ok(Self {
+            pipeline,
+            layout: pipeline_layout,
+            device: device.clone(),
+        })
+    }
+}
+
+pub struct VertexInputDesc {
+    pub primitive_topology: vk::PrimitiveTopology,
+    pub primitive_restart: bool,
+}
+
+impl Default for VertexInputDesc {
+    fn default() -> Self {
+        Self {
+            primitive_topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+            primitive_restart: false,
+        }
+    }
+}
+
+pub struct VertexShaderDesc {
+    pub shader_path: PathBuf,
+    pub dynamic_state: Vec<vk::DynamicState>,
+    pub line_width: f32,
+    pub polygon_mode: vk::PolygonMode,
+    pub cull_mode: vk::CullModeFlags,
+    pub front_face: vk::FrontFace,
+    pub viewport_count: u32,
+    pub scissot_count: u32,
+}
+
+impl Default for VertexShaderDesc {
+    fn default() -> Self {
+        Self {
+            shader_path: PathBuf::new(),
+            dynamic_state: vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR],
+            line_width: 1.0,
+            polygon_mode: vk::PolygonMode::FILL,
+            cull_mode: vk::CullModeFlags::BACK,
+            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
+            viewport_count: 1,
+            scissot_count: 1,
+        }
+    }
+}
+
+pub struct FragmentShaderDesc {
+    pub shader_path: PathBuf,
+}
+
+pub struct FragmentOutputDesc {
+    pub surface_format: vk::Format,
+    pub multisample_state: vk::SampleCountFlags,
+}
+
+impl Default for FragmentOutputDesc {
+    fn default() -> Self {
+        Self {
+            surface_format: vk::Format::B8G8R8A8_SRGB,
+            multisample_state: vk::SampleCountFlags::TYPE_1,
+        }
+    }
+}
+
 pub struct RenderPipeline {
     pub layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -44,20 +142,25 @@ impl RenderPipeline {
         device: &Arc<ash::Device>,
         shader_compiler: &ShaderCompiler,
         cache: &vk::PipelineCache,
-        surface_format: vk::Format,
+        vertex_input_desc: &VertexInputDesc,
+        vertex_shader_desc: &VertexShaderDesc,
+        fragment_shader_desc: &FragmentShaderDesc,
+        fragment_output_desc: &FragmentOutputDesc,
+        push_constant_ranges: &[vk::PushConstantRange],
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
     ) -> Result<Self> {
-        let vs_bytes =
-            shader_compiler.compile("shaders/trig.vert.glsl", shaderc::ShaderKind::Vertex)?;
-        let fs_bytes =
-            shader_compiler.compile("shaders/trig.frag.glsl", shaderc::ShaderKind::Fragment)?;
+        let vs_bytes = shader_compiler
+            .compile(&vertex_shader_desc.shader_path, shaderc::ShaderKind::Vertex)?;
+        let fs_bytes = shader_compiler.compile(
+            &fragment_shader_desc.shader_path,
+            shaderc::ShaderKind::Fragment,
+        )?;
 
-        let push_constant_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .size(size_of::<u64>() as _);
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .push_constant_ranges(std::slice::from_ref(&push_constant_range)),
+                    .set_layouts(descriptor_set_layouts)
+                    .push_constant_ranges(push_constant_ranges),
                 None,
             )?
         };
@@ -65,8 +168,8 @@ impl RenderPipeline {
         use vk::GraphicsPipelineLibraryFlagsEXT as GPF;
         let vertex_input_lib = {
             let input_ass = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
+                .topology(vertex_input_desc.primitive_topology)
+                .primitive_restart_enable(vertex_input_desc.primitive_restart);
             let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
             create_library(device, cache, GPF::VERTEX_INPUT_INTERFACE, |desc| {
@@ -83,15 +186,15 @@ impl RenderPipeline {
                 .name(c"main")
                 .push_next(&mut shader_module);
             let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-                .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+                .dynamic_states(&vertex_shader_desc.dynamic_state);
             let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
-                .line_width(1.0)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE);
+                .line_width(vertex_shader_desc.line_width)
+                .polygon_mode(vertex_shader_desc.polygon_mode)
+                .cull_mode(vertex_shader_desc.cull_mode)
+                .front_face(vertex_shader_desc.front_face);
             let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-                .viewport_count(1)
-                .scissor_count(1);
+                .viewport_count(vertex_shader_desc.viewport_count)
+                .scissor_count(vertex_shader_desc.scissot_count);
 
             create_library(device, cache, GPF::PRE_RASTERIZATION_SHADERS, |desc| {
                 desc.layout(pipeline_layout)
@@ -120,7 +223,7 @@ impl RenderPipeline {
         };
 
         let fragment_output_lib = {
-            let color_attachment_formats = [surface_format];
+            let color_attachment_formats = [fragment_output_desc.surface_format];
             let mut dyn_render = vk::PipelineRenderingCreateInfo::default()
                 .color_attachment_formats(&color_attachment_formats);
 
@@ -194,17 +297,6 @@ impl RenderPipeline {
 
         self.vertex_shader_lib = vertex_shader_lib;
 
-        unsafe { self.device.destroy_pipeline(self.pipeline, None) };
-        self.pipeline = Self::link_libraries(
-            &self.device,
-            pipeline_cache,
-            &self.layout,
-            &self.vertex_input_lib,
-            &self.vertex_shader_lib,
-            &self.fragment_shader_lib,
-            &self.fragment_output_lib,
-        )?;
-
         Ok(())
     }
 
@@ -239,10 +331,14 @@ impl RenderPipeline {
 
         self.fragment_shader_lib = fragment_shader_lib;
 
+        Ok(())
+    }
+
+    pub fn link(&mut self, cache: &vk::PipelineCache) -> Result<()> {
         unsafe { self.device.destroy_pipeline(self.pipeline, None) };
         self.pipeline = Self::link_libraries(
             &self.device,
-            pipeline_cache,
+            cache,
             &self.layout,
             &self.vertex_input_lib,
             &self.vertex_shader_lib,
@@ -365,15 +461,56 @@ impl PipelineArena {
         })
     }
 
-    pub fn create_render_pipeline(&mut self, format: vk::Format) -> Result<RenderHandle> {
-        let vs_path = Path::new("shaders/trig.vert.glsl").canonicalize()?;
-        let fs_path = Path::new("shaders/trig.frag.glsl").canonicalize()?;
-        self.file_watcher.watch_file(&vs_path)?;
-        self.file_watcher.watch_file(&fs_path)?;
+    pub fn create_compute_pipeline(
+        &mut self,
+        shader_path: impl AsRef<Path>,
+        push_constant_ranges: &[vk::PushConstantRange],
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+    ) -> Result<ComputeHandle> {
+        let path = shader_path.as_ref().canonicalize()?;
+        {
+            self.file_watcher.watch_file(&path)?;
+            let mut mapping = self.file_watcher.include_mapping.lock();
+            mapping
+                .entry(path.clone())
+                .or_default()
+                .insert(ShaderSource {
+                    path: path.clone(),
+                    kind: ShaderKind::Compute,
+                });
+        }
+        let pipeline = ComputePipeline::new(
+            &self.device,
+            &self.shader_compiler,
+            &self.pipeline_cache,
+            &path,
+            push_constant_ranges,
+            descriptor_set_layouts,
+        )?;
+        let handle = self.compute.pipelines.insert(pipeline);
+        self.path_mapping
+            .entry(path)
+            .or_default()
+            .insert(Either::Right(handle));
+        Ok(handle)
+    }
+
+    pub fn create_render_pipeline(
+        &mut self,
+        vertex_input_desc: &VertexInputDesc,
+        vertex_shader_desc: &VertexShaderDesc,
+        fragment_shader_desc: &FragmentShaderDesc,
+        fragment_output_desc: &FragmentOutputDesc,
+        push_constant_ranges: &[vk::PushConstantRange],
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+    ) -> Result<RenderHandle> {
+        let vs_path = vertex_shader_desc.shader_path.canonicalize()?;
+        let fs_path = fragment_shader_desc.shader_path.canonicalize()?;
         for (path, kind) in [
             (vs_path.clone(), ShaderKind::Vertex),
             (fs_path.clone(), ShaderKind::Fragment),
         ] {
+            self.file_watcher.watch_file(&path)?;
             let mut mapping = self.file_watcher.include_mapping.lock();
             mapping
                 .entry(path.clone())
@@ -384,7 +521,12 @@ impl PipelineArena {
             &self.device,
             &self.shader_compiler,
             &self.pipeline_cache,
-            format,
+            vertex_input_desc,
+            vertex_shader_desc,
+            fragment_shader_desc,
+            fragment_output_desc,
+            push_constant_ranges,
+            descriptor_set_layouts,
         )?;
         let handle = self.render.pipelines.insert(pipeline);
         self.path_mapping
@@ -409,25 +551,20 @@ impl PipelineArena {
 
 pub struct RenderArena {
     pub pipelines: SlotMap<RenderHandle, RenderPipeline>,
-    //     descriptors: SecondaryMap<RenderHandle, RenderPipelineDescriptor>,
 }
 
 struct ComputeArena {
     pipelines: SlotMap<ComputeHandle, ComputePipeline>,
-    //     descriptors: SecondaryMap<ComputeHandle, ComputePipelineDescriptor>,
 }
 
 pub trait Handle {
     type Pipeline;
-    // type Descriptor;
     fn get_pipeline(self, arena: &PipelineArena) -> &Self::Pipeline;
     fn get_pipeline_mut(self, arena: &mut PipelineArena) -> &mut Self::Pipeline;
-    // fn get_descriptor(self, arena: &PipelineArena) -> &Self::Descriptor;
 }
 
 impl Handle for RenderHandle {
     type Pipeline = RenderPipeline;
-    // type Descriptor = RenderPipelineDescriptor;
 
     fn get_pipeline(self, arena: &PipelineArena) -> &Self::Pipeline {
         &arena.render.pipelines[self]
@@ -436,15 +573,11 @@ impl Handle for RenderHandle {
     fn get_pipeline_mut(self, arena: &mut PipelineArena) -> &mut Self::Pipeline {
         &mut arena.render.pipelines[self]
     }
-
-    // fn get_descriptor(self, arena: &PipelineArena) -> &Self::Descriptor {
-    //     &arena.render.descriptors[self]
-    // }
 }
 
 impl Handle for ComputeHandle {
     type Pipeline = ComputePipeline;
-    // type Descriptor = ComputePipelineDescriptor;
+
     fn get_pipeline(self, arena: &PipelineArena) -> &Self::Pipeline {
         &arena.compute.pipelines[self]
     }
@@ -452,8 +585,4 @@ impl Handle for ComputeHandle {
     fn get_pipeline_mut(self, arena: &mut PipelineArena) -> &mut Self::Pipeline {
         &mut arena.compute.pipelines[self]
     }
-
-    // fn get_descriptor(self, arena: &PipelineArena) -> &Self::Descriptor {
-    //     &arena.compute.descriptors[self]
-    // }
 }
