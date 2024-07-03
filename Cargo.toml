@@ -1,0 +1,20 @@
+[package]
+name = "myndgera"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+ash = "0.38"
+ash-window = "0.13"
+bitflags = "2"
+bytemuck = "1.16"
+raw-window-handle = "0.6.2"
+winit = "0.30"
+shaderc = "0.8"
+notify = "^6"
+notify-debouncer-mini = "0.4"
+ahash = "0.8"
+slotmap = "1.0"
+either = "1.13"
+parking_lot = { version = "0.12", features = ["deadlock_detection"] }
