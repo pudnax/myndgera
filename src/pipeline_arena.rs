@@ -69,7 +69,7 @@ impl RenderPipeline {
                 .primitive_restart_enable(false);
             let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
-            create_library(&device, cache, GPF::VERTEX_INPUT_INTERFACE, |desc| {
+            create_library(device, cache, GPF::VERTEX_INPUT_INTERFACE, |desc| {
                 desc.vertex_input_state(&vertex_input)
                     .input_assembly_state(&input_ass)
             })?
@@ -93,7 +93,7 @@ impl RenderPipeline {
                 .viewport_count(1)
                 .scissor_count(1);
 
-            create_library(&device, cache, GPF::PRE_RASTERIZATION_SHADERS, |desc| {
+            create_library(device, cache, GPF::PRE_RASTERIZATION_SHADERS, |desc| {
                 desc.layout(pipeline_layout)
                     .stages(std::slice::from_ref(&shader_stage))
                     .dynamic_state(&dynamic_state)
@@ -112,7 +112,7 @@ impl RenderPipeline {
 
             let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default();
 
-            create_library(&device, cache, GPF::FRAGMENT_SHADER, |desc| {
+            create_library(device, cache, GPF::FRAGMENT_SHADER, |desc| {
                 desc.layout(pipeline_layout)
                     .stages(std::slice::from_ref(&shader_stage))
                     .depth_stencil_state(&depth_stencil_state)
@@ -127,14 +127,14 @@ impl RenderPipeline {
             let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
                 .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-            create_library(&device, cache, GPF::FRAGMENT_OUTPUT_INTERFACE, |desc| {
+            create_library(device, cache, GPF::FRAGMENT_OUTPUT_INTERFACE, |desc| {
                 desc.multisample_state(&multisample_state)
                     .push_next(&mut dyn_render)
             })?
         };
 
         let pipeline = Self::link_libraries(
-            &device,
+            device,
             cache,
             &pipeline_layout,
             &vertex_input_lib,
