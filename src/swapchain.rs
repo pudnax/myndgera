@@ -1,9 +1,9 @@
 use std::{collections::VecDeque, slice, sync::Arc};
 
 use ash::{
-    khr::{self},
+    khr,
     prelude::VkResult,
-    vk,
+    vk::{self, CompositeAlphaFlagsKHR},
 };
 
 use crate::{
@@ -116,14 +116,24 @@ impl Swapchain {
                 )
             })
             .unwrap_or(&info.formats[0]);
-        let image_count = 3
-            .max(capabilities.min_image_count)
-            .min(capabilities.max_image_count);
+
+        let image_count = capabilities
+            .max_image_count
+            .min(3)
+            .max(capabilities.min_image_count);
 
         let queue_family_index = [device.main_queue_family_idx];
         let swapchain_usage =
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
-        let extent = capabilities.current_extent;
+
+        let mut extent = capabilities.current_extent;
+        //Sadly _current_extent_ can be outside the min/max capabilities :(.
+        extent.width = extent.width.min(capabilities.max_image_extent.width);
+        extent.height = extent.height.min(capabilities.max_image_extent.height);
+
+        assert!(capabilities
+            .supported_composite_alpha
+            .contains(CompositeAlphaFlagsKHR::OPAQUE));
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
             .image_format(format.format)
@@ -135,7 +145,7 @@ impl Swapchain {
             .queue_family_indices(&queue_family_index)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
-            .composite_alpha(capabilities.supported_composite_alpha)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true);
         let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };

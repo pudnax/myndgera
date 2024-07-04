@@ -121,20 +121,29 @@ impl AppInit {
                 match handle {
                     Either::Left(handle) => {
                         let pipeline = &mut self.pipeline_arena.render.pipelines[*handle];
-                        match kind {
+                        if let Err(err) = match kind {
                             ShaderKind::Vertex => {
-                                pipeline.reload_vertex_lib(compiler, cache, &path)?
+                                pipeline.reload_vertex_lib(compiler, cache, &path)
                             }
                             ShaderKind::Fragment => {
-                                pipeline.reload_fragment_lib(compiler, cache, &path)?
+                                pipeline.reload_fragment_lib(compiler, cache, &path)
                             }
                             ShaderKind::Compute => {
                                 bail!("Supplied compute shader into render pipeline!")
                             }
-                        }
-                        pipeline.link(cache)?;
+                        } {
+                            eprintln!("{err}")
+                        };
+                        if let Err(err) = pipeline.link(cache) {
+                            eprintln!("{err}")
+                        };
                     }
-                    Either::Right(_compute) => {}
+                    Either::Right(handle) => {
+                        let pipeline = &mut self.pipeline_arena.compute.pipelines[*handle];
+                        if let Err(err) = pipeline.reload(compiler, cache) {
+                            eprintln!("{err}")
+                        };
+                    }
                 }
             }
         }

@@ -17,6 +17,7 @@ use crate::{Device, ShaderCompiler, ShaderKind, ShaderSource, Watcher};
 pub struct ComputePipeline {
     pub layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
+    shader_path: PathBuf,
     device: Arc<ash::Device>,
 }
 
@@ -63,9 +64,39 @@ impl ComputePipeline {
 
         Ok(Self {
             pipeline,
+            shader_path: shader_path.as_ref().to_path_buf(),
             layout: pipeline_layout,
             device: device.clone(),
         })
+    }
+
+    pub fn reload(
+        &mut self,
+        shader_compiler: &ShaderCompiler,
+        pipeline_cache: &vk::PipelineCache,
+    ) -> Result<()> {
+        let cs_bytes = shader_compiler.compile(&self.shader_path, shaderc::ShaderKind::Compute)?;
+
+        unsafe { self.device.destroy_pipeline(self.pipeline, None) }
+
+        let mut shader_module = vk::ShaderModuleCreateInfo::default().code(cs_bytes.as_binary());
+        let shader_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .name(c"main")
+            .push_next(&mut shader_module);
+
+        let create_info = vk::ComputePipelineCreateInfo::default()
+            .layout(self.layout)
+            .stage(shader_stage);
+        let pipeline = unsafe {
+            self.device
+                .create_compute_pipelines(*pipeline_cache, &[create_info], None)
+        };
+        let pipeline = pipeline.map_err(|(_, err)| err)?[0];
+
+        self.pipeline = pipeline;
+
+        Ok(())
     }
 }
 
@@ -425,7 +456,7 @@ slotmap::new_key_type! {
 
 pub struct PipelineArena {
     pub render: RenderArena,
-    compute: ComputeArena,
+    pub compute: ComputeArena,
     pub path_mapping: AHashMap<PathBuf, AHashSet<Either<RenderHandle, ComputeHandle>>>,
     pub pipeline_cache: vk::PipelineCache,
     pub shader_compiler: ShaderCompiler,
@@ -553,8 +584,8 @@ pub struct RenderArena {
     pub pipelines: SlotMap<RenderHandle, RenderPipeline>,
 }
 
-struct ComputeArena {
-    pipelines: SlotMap<ComputeHandle, ComputePipeline>,
+pub struct ComputeArena {
+    pub pipelines: SlotMap<ComputeHandle, ComputePipeline>,
 }
 
 pub trait Handle {
