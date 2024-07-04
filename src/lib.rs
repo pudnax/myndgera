@@ -1,3 +1,5 @@
+#![allow(clippy::new_without_default)]
+
 mod device;
 mod instance;
 mod pipeline_arena;
@@ -7,7 +9,7 @@ mod surface;
 mod swapchain;
 mod watcher;
 
-use std::sync::Arc;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 pub use self::{
     device::{Device, HostBuffer},
@@ -20,7 +22,10 @@ pub use self::{
     watcher::Watcher,
 };
 
-use ash::{prelude::VkResult, vk};
+use ash::vk::{self, DeviceMemory};
+use gpu_alloc::{GpuAllocator, MapError, MemoryBlock};
+use gpu_alloc_ash::AshMemoryDevice;
+use parking_lot::Mutex;
 
 pub fn align_to(size: u64, alignment: u64) -> u64 {
     (size + alignment - 1) & !(alignment - 1)
@@ -77,23 +82,23 @@ impl ImageDimensions {
 
 pub struct ManagedImage {
     image: vk::Image,
-    memory: vk::DeviceMemory,
-    memory_reqs: vk::MemoryRequirements,
+    memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
     image_dimensions: ImageDimensions,
-    ptr: Option<&'static mut [u8]>,
+    data: Option<&'static mut [u8]>,
     device: Arc<ash::Device>,
+    allocator: Arc<Mutex<GpuAllocator<DeviceMemory>>>,
 }
 
 impl ManagedImage {
     pub fn new(
         device: &Device,
         info: &vk::ImageCreateInfo,
-        memory_props: vk::MemoryPropertyFlags,
+        usage: gpu_alloc::UsageFlags,
     ) -> anyhow::Result<Self> {
-        let image = unsafe { device.create_image(&info, None)? };
+        let image = unsafe { device.create_image(info, None)? };
         let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
-        let memory = device.alloc_memory(memory_reqs, memory_props)?;
-        unsafe { device.bind_image_memory(image, memory, 0) }?;
+        let memory = device.alloc_memory(memory_reqs, usage)?;
+        unsafe { device.bind_image_memory(image, *memory.memory(), memory.offset()) }?;
         let subresource = vk::ImageSubresource::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .mip_level(0)
@@ -106,28 +111,25 @@ impl ManagedImage {
         );
         Ok(Self {
             image,
-            memory,
-            memory_reqs,
+            memory: ManuallyDrop::new(memory),
             image_dimensions,
-            ptr: None,
+            data: None,
             device: device.device.clone(),
+            allocator: device.allocator.clone(),
         })
     }
 
-    pub fn map_memory(&mut self) -> VkResult<()> {
-        if self.ptr.is_some() {
+    pub fn map_memory(&mut self) -> Result<(), MapError> {
+        if self.data.is_some() {
             return Ok(());
         }
+        let size = self.memory.size() as usize;
+        let offset = self.memory.offset();
         let ptr = unsafe {
-            self.device.map_memory(
-                self.memory,
-                0,
-                self.memory_reqs.size,
-                vk::MemoryMapFlags::empty(),
-            )?
+            self.memory
+                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
         };
-        self.ptr =
-            Some(unsafe { std::slice::from_raw_parts_mut(ptr.cast(), self.memory_reqs.size as _) });
+        self.data = Some(unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) });
         Ok(())
     }
 }
@@ -136,7 +138,25 @@ impl Drop for ManagedImage {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_image(self.image, None);
-            self.device.free_memory(self.memory, None);
+            {
+                let mut allocator = self.allocator.lock();
+                let memory = ManuallyDrop::take(&mut self.memory);
+                allocator.dealloc(AshMemoryDevice::wrap(&self.device), memory);
+            }
         }
     }
+}
+
+pub fn find_memory_type_index(
+    memory_prop: &vk::PhysicalDeviceMemoryProperties,
+    memory_type_bits: u32,
+    flags: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    memory_prop.memory_types[..memory_prop.memory_type_count as _]
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            (1 << index) & memory_type_bits != 0 && (memory_type.property_flags & flags) == flags
+        })
+        .map(|(index, _memory_type)| index as _)
 }

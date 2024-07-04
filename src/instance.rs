@@ -7,6 +7,7 @@ use crate::{
 
 use anyhow::{Context, Result};
 use ash::{ext, khr, vk, Entry};
+use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub struct Instance {
@@ -195,11 +196,17 @@ impl Instance {
 
         let dynamic_rendering = khr::dynamic_rendering::Device::new(self, &device);
 
+        let device_alloc_properties =
+            unsafe { gpu_alloc_ash::device_properties(self, vk::API_VERSION_1_3, pdevice)? };
+        let allocator =
+            gpu_alloc::GpuAllocator::new(gpu_alloc::Config::i_am_potato(), device_alloc_properties);
+
         let device = Device {
             physical_device: pdevice,
             main_queue_family_idx,
             transfer_queue_family_idx,
             memory_properties,
+            allocator: Arc::new(Mutex::new(allocator)),
             device: Arc::new(device),
             ext: Arc::new(DeviceExt { dynamic_rendering }),
         };

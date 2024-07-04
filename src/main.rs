@@ -57,9 +57,7 @@ impl AppInit {
 
         let host_buffer = device.create_host_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL
-                | vk::MemoryPropertyFlags::HOST_VISIBLE
-                | vk::MemoryPropertyFlags::HOST_COHERENT,
+            gpu_alloc::UsageFlags::HOST_ACCESS,
         )?;
 
         let mut pipeline_arena = PipelineArena::new(&device, watcher.clone())?;

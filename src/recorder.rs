@@ -166,7 +166,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                     let _ = frame
                         .map_memory()
                         .map_err(|err| eprintln!("Failed to map memory: {err}"));
-                    let Some(data) = frame.ptr.as_ref() else {
+                    let Some(data) = frame.data.as_ref() else {
                         continue;
                     };
                     for chunk in data
@@ -189,7 +189,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                 let _ = frame
                     .map_memory()
                     .map_err(|err| eprintln!("Failed to map memory: {err}"));
-                let Some(data) = frame.ptr.as_ref() else {
+                let Some(data) = frame.data.as_ref() else {
                     continue;
                 };
                 match save_screenshot(data, frame.image_dimensions) {
