@@ -38,9 +38,8 @@ pub use self::{
 
 use anyhow::{bail, Context};
 use ash::vk::{self, DeviceMemory};
-use gpu_alloc::{GpuAllocator, MapError, MemoryBlock};
+use gpu_alloc::{MapError, MemoryBlock};
 use gpu_alloc_ash::AshMemoryDevice;
-use parking_lot::Mutex;
 
 pub const SHADER_DUMP_FOLDER: &str = "shader_dump";
 pub const SHADER_FOLDER: &str = "shaders";
@@ -277,7 +276,6 @@ pub struct ManagedImage {
     pub data: Option<&'static mut [u8]>,
     pub format: vk::Format,
     device: Arc<Device>,
-    allocator: Arc<Mutex<GpuAllocator<DeviceMemory>>>,
 }
 
 impl ManagedImage {
@@ -286,10 +284,8 @@ impl ManagedImage {
         info: &vk::ImageCreateInfo,
         usage: gpu_alloc::UsageFlags,
     ) -> anyhow::Result<Self> {
-        let image = unsafe { device.create_image(info, None)? };
+        let (image, memory) = device.create_image(info, usage)?;
         let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
-        let memory = device.alloc_memory(memory_reqs, usage)?;
-        unsafe { device.bind_image_memory(image, *memory.memory(), memory.offset()) }?;
         let image_dimensions = ImageDimensions::new(
             info.extent.width as _,
             info.extent.height as _,
@@ -302,7 +298,6 @@ impl ManagedImage {
             format: info.format,
             data: None,
             device: device.clone(),
-            allocator: device.allocator.clone(),
         })
     }
 
@@ -327,12 +322,8 @@ impl ManagedImage {
 impl Drop for ManagedImage {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_image(self.image, None);
-            {
-                let mut allocator = self.allocator.lock();
-                let memory = ManuallyDrop::take(&mut self.memory);
-                allocator.dealloc(AshMemoryDevice::wrap(&self.device), memory);
-            }
+            let memory = ManuallyDrop::take(&mut self.memory);
+            self.device.destroy_image(self.image, memory);
         }
     }
 }

@@ -50,6 +50,23 @@ impl Device {
         };
     }
 
+    pub fn create_image(
+        &self,
+        info: &vk::ImageCreateInfo,
+        usage: UsageFlags,
+    ) -> Result<(vk::Image, MemoryBlock<DeviceMemory>)> {
+        let image = unsafe { self.device.create_image(info, None)? };
+        let memory_reqs = unsafe { self.get_image_memory_requirements(image) };
+        let memory = self.alloc_memory(memory_reqs, usage)?;
+        unsafe { self.bind_image_memory(image, *memory.memory(), memory.offset()) }?;
+        Ok((image, memory))
+    }
+
+    pub fn destroy_image(&self, image: vk::Image, memory: MemoryBlock<DeviceMemory>) {
+        self.dealloc_memory(memory);
+        unsafe { self.device.destroy_image(image, None) };
+    }
+
     pub fn create_2d_view(&self, image: &vk::Image, format: vk::Format) -> VkResult<vk::ImageView> {
         let view = unsafe {
             self.create_image_view(

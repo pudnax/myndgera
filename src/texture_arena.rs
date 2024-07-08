@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
 use ash::{
@@ -7,7 +7,7 @@ use ash::{
 };
 use gpu_alloc::{MemoryBlock, UsageFlags};
 
-use crate::{Device, ImageDimensions, COLOR_SUBRESOURCE_MASK};
+use crate::{Device, Swapchain, COLOR_SUBRESOURCE_MASK};
 
 pub const LINEAR_SAMPLER_IDX: usize = 0;
 pub const NEAREST_SAMPLER_IDX: usize = 1;
@@ -22,49 +22,13 @@ pub const BLUE_IMAGE_IDX: usize = 5;
 pub const SCREENSIZED_IMAGE_INDICES: [usize; 3] =
     [PREV_FRAME_IMAGE_IDX, GENERIC_IMAGE1_IDX, GENERIC_IMAGE2_IDX];
 
-pub struct Image {
-    pub image: vk::Image,
-    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub image_dimensions: ImageDimensions,
-}
-
-impl Image {
-    pub fn new(
-        device: &Device,
-        info: &vk::ImageCreateInfo,
-        usage: gpu_alloc::UsageFlags,
-    ) -> Result<Self> {
-        let image = unsafe { device.create_image(info, None)? };
-        let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
-        let memory = device.alloc_memory(memory_reqs, usage)?;
-        unsafe { device.bind_image_memory(image, *memory.memory(), memory.offset()) }?;
-        let image_dimensions = ImageDimensions::new(
-            info.extent.width as _,
-            info.extent.height as _,
-            memory_reqs.alignment,
-        );
-        Ok(Self {
-            image,
-            memory: ManuallyDrop::new(memory),
-            image_dimensions,
-        })
-    }
-
-    fn desctroy(&mut self, device: &Device) {
-        unsafe {
-            let memory = ManuallyDrop::take(&mut self.memory);
-            device.dealloc_memory(memory);
-            device.destroy_image(self.image, None)
-        }
-    }
-}
-
 const IMAGES_COUNT: u32 = 2048;
 const SAMPLER_COUNT: u32 = 8;
 
 pub struct TextureArena {
-    pub images: Vec<Image>,
-    pub image_infos: Vec<vk::ImageCreateInfo<'static>>,
+    pub images: Vec<vk::Image>,
+    pub memories: Vec<Option<MemoryBlock<DeviceMemory>>>,
+    pub infos: Vec<vk::ImageCreateInfo<'static>>,
     pub views: Vec<vk::ImageView>,
     pub samplers: [vk::Sampler; SAMPLER_COUNT as usize],
     descriptor_pool: vk::DescriptorPool,
@@ -78,7 +42,7 @@ impl TextureArena {
         self.images.len()
     }
 
-    pub fn new(device: &Arc<Device>, queue: &vk::Queue, extent: vk::Extent2D) -> Result<Self> {
+    pub fn new(device: &Arc<Device>, swapchain: &Swapchain, queue: &vk::Queue) -> Result<Self> {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
@@ -149,8 +113,8 @@ impl TextureArena {
         let image_infos: [_; 3] = std::array::from_fn(|_| {
             vk::ImageCreateInfo::default()
                 .extent(vk::Extent3D {
-                    width: extent.width,
-                    height: extent.height,
+                    width: swapchain.extent.width,
+                    height: swapchain.extent.height,
                     depth: 1,
                 })
                 .image_type(vk::ImageType::TYPE_2D)
@@ -162,15 +126,18 @@ impl TextureArena {
                 .tiling(vk::ImageTiling::OPTIMAL)
         });
 
-        let images = image_infos
+        let (images, memories) = image_infos
             .iter()
-            .map(|info| Image::new(device, info, gpu_alloc::UsageFlags::FAST_DEVICE_ACCESS))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|info| {
+                let (image, memory) = device.create_image(info, UsageFlags::FAST_DEVICE_ACCESS)?;
+                Ok((image, Some(memory)))
+            })
+            .collect::<Result<(Vec<_>, Vec<_>)>>()?;
 
         let views = images
             .iter()
             .zip(image_infos)
-            .map(|(image, info)| device.create_2d_view(&image.image, info.format))
+            .map(|(image, info)| device.create_2d_view(image, info.format))
             .collect::<VkResult<Vec<_>>>()?;
 
         for (i, view) in views.iter().enumerate() {
@@ -217,7 +184,8 @@ impl TextureArena {
 
         let mut texture_arena = Self {
             images,
-            image_infos: image_infos.to_vec(),
+            memories,
+            infos: image_infos.to_vec(),
             views,
             samplers,
             descriptor_pool,
@@ -227,7 +195,7 @@ impl TextureArena {
         };
 
         texture_arena.device.name_object(
-            texture_arena.images[PREV_FRAME_IMAGE_IDX].image,
+            texture_arena.images[PREV_FRAME_IMAGE_IDX],
             "Previous Frame Image",
         );
         texture_arena.device.name_object(
@@ -254,7 +222,7 @@ impl TextureArena {
         texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
         texture_arena
             .device
-            .name_object(texture_arena.images[DITHER_IMAGE_IDX].image, "Dither Image");
+            .name_object(texture_arena.images[DITHER_IMAGE_IDX], "Dither Image");
         texture_arena
             .device
             .name_object(texture_arena.views[DITHER_IMAGE_IDX], "Dither Image View");
@@ -267,7 +235,7 @@ impl TextureArena {
         texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
         texture_arena
             .device
-            .name_object(texture_arena.images[NOISE_IMAGE_IDX].image, "Noise Image");
+            .name_object(texture_arena.images[NOISE_IMAGE_IDX], "Noise Image");
         texture_arena
             .device
             .name_object(texture_arena.views[NOISE_IMAGE_IDX], "Noise Image View");
@@ -278,10 +246,9 @@ impl TextureArena {
         extent.height = dds.get_height();
         info.extent = extent;
         texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
-        texture_arena.device.name_object(
-            texture_arena.images[BLUE_IMAGE_IDX].image,
-            "Blue Noise Image",
-        );
+        texture_arena
+            .device
+            .name_object(texture_arena.images[BLUE_IMAGE_IDX], "Blue Noise Image");
         texture_arena
             .device
             .name_object(texture_arena.views[BLUE_IMAGE_IDX], "Blue Noise Image View");
@@ -293,12 +260,13 @@ impl TextureArena {
         &mut self,
         device: &Arc<Device>,
         queue: &vk::Queue,
-        info: vk::ImageCreateInfo,
+        info: vk::ImageCreateInfo<'static>,
         data: &[u8],
     ) -> Result<u32> {
-        let image = { Image::new(device, &info, UsageFlags::FAST_DEVICE_ACCESS)? };
+        let (image, memory) = device.create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+
         let mut staging = device.create_host_buffer(
-            image.memory.size(),
+            memory.size(),
             vk::BufferUsageFlags::TRANSFER_SRC,
             UsageFlags::UPLOAD,
         )?;
@@ -309,7 +277,7 @@ impl TextureArena {
                 .subresource_range(COLOR_SUBRESOURCE_MASK)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(image.image);
+                .image(image);
             let dependency_info = vk::DependencyInfo::default()
                 .image_memory_barriers(std::slice::from_ref(&image_barrier));
             device.cmd_pipeline_barrier2(cbuff, &dependency_info);
@@ -324,7 +292,7 @@ impl TextureArena {
             device.cmd_copy_buffer_to_image(
                 cbuff,
                 staging.buffer,
-                image.image,
+                image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[regions],
             );
@@ -335,7 +303,7 @@ impl TextureArena {
             device.cmd_pipeline_barrier2(cbuff, &dependency_info);
         })?;
 
-        let view = self.device.create_2d_view(&image.image, info.format)?;
+        let view = self.device.create_2d_view(&image, info.format)?;
         let idx = self.images.len() as u32;
 
         let image_info = vk::DescriptorImageInfo::default()
@@ -350,19 +318,19 @@ impl TextureArena {
         unsafe { device.update_descriptor_sets(&[write], &[]) };
 
         self.images.push(image);
+        self.infos.push(info);
+        self.memories.push(Some(memory));
         self.views.push(view);
 
         Ok(idx)
     }
 
     pub fn update_images(&mut self, indices: &[usize]) -> Result<()> {
-        for (i, info) in indices.iter().map(|&i| (i, &self.image_infos[i])) {
-            let image = Image::new(
-                &self.device,
-                info,
-                gpu_alloc::UsageFlags::FAST_DEVICE_ACCESS,
-            )?;
-            let view = self.device.create_2d_view(&image.image, info.format)?;
+        for (i, info) in indices.iter().map(|&i| (i, &self.infos[i])) {
+            let (image, memory) = self
+                .device
+                .create_image(info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let view = self.device.create_2d_view(&image, info.format)?;
 
             let image_info = vk::DescriptorImageInfo::default()
                 .image_view(view)
@@ -375,9 +343,12 @@ impl TextureArena {
                 .dst_array_element(i as _);
             unsafe { self.device.update_descriptor_sets(&[write], &[]) };
 
-            self.images[i].desctroy(&self.device);
+            if let Some(old_memory) = self.memories[i].take() {
+                self.device.destroy_image(self.images[i], old_memory);
+            }
             unsafe { self.device.destroy_image_view(self.views[i], None) };
             self.images[i] = image;
+            self.memories[i] = Some(memory);
             self.views[i] = view;
         }
 
@@ -388,9 +359,13 @@ impl TextureArena {
 impl Drop for TextureArena {
     fn drop(&mut self) {
         unsafe {
-            self.images.iter_mut().for_each(|image| {
-                image.desctroy(&self.device);
-            });
+            self.images
+                .iter_mut()
+                .zip(self.memories.iter_mut())
+                .filter_map(|(img, mem)| mem.take().map(|mem| (img, mem)))
+                .for_each(|(image, memory)| {
+                    self.device.destroy_image(*image, memory);
+                });
 
             self.views
                 .iter()

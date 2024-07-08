@@ -90,7 +90,7 @@ impl AppInit {
             ..Default::default()
         };
 
-        let texture_arena = TextureArena::new(&device, &queue, swapchain.extent())?;
+        let texture_arena = TextureArena::new(&device, &swapchain, &queue)?;
 
         let vertex_shader_desc = VertexShaderDesc {
             shader_path: "shaders/shader.vert".into(),
@@ -218,8 +218,8 @@ impl AppInit {
         self.push_constant.wh = [extent.width as f32, extent.height as f32];
 
         for i in SCREENSIZED_IMAGE_INDICES {
-            self.texture_arena.image_infos[i].extent.width = extent.width;
-            self.texture_arena.image_infos[i].extent.height = extent.height;
+            self.texture_arena.infos[i].extent.width = extent.width;
+            self.texture_arena.infos[i].extent.height = extent.height;
         }
         self.texture_arena
             .update_images(&SCREENSIZED_IMAGE_INDICES)?;
@@ -423,7 +423,7 @@ impl ApplicationHandler<UserEvent> for AppInit {
                         .subresource_range(COLOR_SUBRESOURCE_MASK)
                         .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                         .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
-                        .image(self.texture_arena.images[PREV_FRAME_IMAGE_IDX].image);
+                        .image(self.texture_arena.images[PREV_FRAME_IMAGE_IDX]);
                     self.device.cmd_pipeline_barrier2(
                         *frame.command_buffer(),
                         &vk::DependencyInfo::default()
@@ -452,7 +452,7 @@ impl ApplicationHandler<UserEvent> for AppInit {
                     self.swapchain.get_current_image(),
                     self.swapchain.extent(),
                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    &self.texture_arena.images[PREV_FRAME_IMAGE_IDX].image,
+                    &self.texture_arena.images[PREV_FRAME_IMAGE_IDX],
                     self.swapchain.extent(),
                     vk::ImageLayout::UNDEFINED,
                 );
