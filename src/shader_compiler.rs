@@ -1,10 +1,8 @@
 use std::path::Path;
 
-use crate::Watcher;
+use crate::{Watcher, SHADER_FOLDER};
 use anyhow::{Context, Result};
 use shaderc::{CompilationArtifact, IncludeType, ShaderKind};
-
-const SHADER_DIR: &str = "shaders";
 
 pub struct ShaderCompiler {
     compiler: shaderc::Compiler,
@@ -27,7 +25,7 @@ impl ShaderCompiler {
         options.set_include_callback(move |name, include_type, source_file, _depth| {
             let path = match include_type {
                 IncludeType::Relative => Path::new(source_file).parent().unwrap().join(name),
-                IncludeType::Standard => Path::new(SHADER_DIR).join(name),
+                IncludeType::Standard => Path::new(SHADER_FOLDER).join(name),
             };
             // TODO: recreate dependencies in case someone removes includes
             match std::fs::read_to_string(&path) {
@@ -39,7 +37,7 @@ impl ShaderCompiler {
                             .watcher()
                             .watch(&include_path, notify::RecursiveMode::NonRecursive);
                     }
-                    let source_path = Path::new(SHADER_DIR)
+                    let source_path = Path::new(SHADER_FOLDER)
                         .join(source_file)
                         .canonicalize()
                         .unwrap();

@@ -4,22 +4,43 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0"
+# Ecosystem choice for crossplatform windows
+raw-window-handle = "0.6.2"
+winit = "0.30"
 ash = "0.38"
 ash-window = "0.13"
 bitflags = "2"
 bytemuck = "1.16"
-raw-window-handle = "0.6.2"
-winit = "0.30"
-shaderc = "0.8"
-notify = "^6"
-notify-debouncer-mini = "0.4"
 ahash = "0.8"
 slotmap = "1.0"
 either = "1.13"
 parking_lot = "0.12"
-chrono = "0.4.38"
-png = "0.17.13"
-crossbeam-channel = "0.5.13"
 gpu-alloc = "0.6.0"
 gpu-alloc-ash = "0.7.0"
+
+# Fancy-pants errors
+anyhow = "1.0"
+
+# Crossplatform filesystem event handler
+notify = "^6"
+notify-debouncer-mini = "0.4"
+
+# Deps for image manipulations
+chrono = "0.4"
+png = "0.17"
+
+crossbeam-channel = "0.5.13"
+env_logger = "0.11.3"
+
+# Shader compiler
+shaderc = "0.8"
+ddsfile = "0.5.2"
+log = "0.4.22"
+pretty-type-name = "1.0.1"
+
+[profile.deploy]
+inherits = "release"
+lto = true
+
+[profile.dev.package.'*']
+opt-level = 3

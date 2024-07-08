@@ -2,27 +2,32 @@ use anyhow::Result;
 use gpu_alloc::{GpuAllocator, MemoryBlock, Request, UsageFlags};
 use gpu_alloc_ash::AshMemoryDevice;
 use parking_lot::Mutex;
-use std::{mem::ManuallyDrop, sync::Arc};
-
-use ash::{
-    khr,
-    vk::{self, DeviceMemory},
+use std::{
+    ffi::{CStr, CString},
+    mem::ManuallyDrop,
+    sync::Arc,
 };
 
-use crate::ManagedImage;
+use ash::{
+    ext, khr,
+    prelude::VkResult,
+    vk::{self, DeviceMemory, Handle},
+};
+
+use crate::{align_to, ManagedImage, COLOR_SUBRESOURCE_MASK};
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
+    pub device_properties: vk::PhysicalDeviceProperties,
+    pub descriptor_indexing_props: vk::PhysicalDeviceDescriptorIndexingProperties<'static>,
+    pub command_pool: vk::CommandPool,
     pub main_queue_family_idx: u32,
     pub transfer_queue_family_idx: u32,
     pub allocator: Arc<Mutex<GpuAllocator<DeviceMemory>>>,
-    pub device: Arc<ash::Device>,
-    pub ext: Arc<DeviceExt>,
-}
-
-pub struct DeviceExt {
+    pub device: ash::Device,
     pub dynamic_rendering: khr::dynamic_rendering::Device,
+    pub(crate) dbg_utils: ext::debug_utils::Device,
 }
 
 impl std::ops::Deref for Device {
@@ -34,10 +39,75 @@ impl std::ops::Deref for Device {
 }
 
 impl Device {
-    pub fn get_buffer_address<T>(&self, buffer: vk::Buffer) -> u64 {
+    pub fn name_object(&self, handle: impl Handle, name: &str) {
+        let name = CString::new(name).unwrap();
+        let _ = unsafe {
+            self.dbg_utils.set_debug_utils_object_name(
+                &vk::DebugUtilsObjectNameInfoEXT::default()
+                    .object_handle(handle)
+                    .object_name(&name),
+            )
+        };
+    }
+
+    pub fn create_2d_view(&self, image: &vk::Image, format: vk::Format) -> VkResult<vk::ImageView> {
+        let view = unsafe {
+            self.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .image(*image)
+                    .format(format)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(1)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    ),
+                None,
+            )?
+        };
+        Ok(view)
+    }
+
+    pub fn one_time_submit(
+        &self,
+        queue: &vk::Queue,
+        callbk: impl FnOnce(&Self, vk::CommandBuffer),
+    ) -> VkResult<()> {
+        let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
+        let command_buffer = unsafe {
+            self.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(self.command_pool)
+                    .command_buffer_count(1)
+                    .level(vk::CommandBufferLevel::PRIMARY),
+            )?[0]
+        };
+
         unsafe {
-            self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+            self.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            callbk(self, command_buffer);
+
+            self.end_command_buffer(command_buffer)?;
+
+            let submit_info =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+
+            self.queue_submit(*queue, &[submit_info], fence)?;
+            self.wait_for_fences(&[fence], true, u64::MAX)?;
+
+            self.destroy_fence(fence, None);
+            self.free_command_buffers(self.command_pool, &[command_buffer]);
         }
+
+        Ok(())
     }
 
     pub fn alloc_memory(
@@ -48,7 +118,7 @@ impl Device {
         let mut allocator = self.allocator.lock();
         let memory_block = unsafe {
             allocator.alloc(
-                AshMemoryDevice::wrap(&self.device),
+                AshMemoryDevice::wrap(self),
                 Request {
                     size: memory_reqs.size,
                     align_mask: memory_reqs.alignment - 1,
@@ -58,6 +128,11 @@ impl Device {
             )
         };
         memory_block
+    }
+
+    pub fn dealloc_memory(&self, block: MemoryBlock<DeviceMemory>) {
+        let mut allocator = self.allocator.lock();
+        unsafe { allocator.dealloc(AshMemoryDevice::wrap(self), block) };
     }
 
     pub fn blit_image(
@@ -70,15 +145,8 @@ impl Device {
         dst_extent: vk::Extent2D,
         dst_orig_layout: vk::ImageLayout,
     ) {
-        let subresource_range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: vk::REMAINING_MIP_LEVELS,
-            base_array_layer: 0,
-            layer_count: vk::REMAINING_ARRAY_LAYERS,
-        };
         let src_barrier = vk::ImageMemoryBarrier2::default()
-            .subresource_range(subresource_range)
+            .subresource_range(COLOR_SUBRESOURCE_MASK)
             .image(*src_image)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -86,7 +154,7 @@ impl Device {
             .old_layout(src_orig_layout)
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         let dst_barrier = vk::ImageMemoryBarrier2::default()
-            .subresource_range(subresource_range)
+            .subresource_range(COLOR_SUBRESOURCE_MASK)
             .image(*dst_image)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -152,19 +220,18 @@ impl Device {
     }
 
     pub fn capture_image_data(
-        &self,
+        self: &Arc<Self>,
         queue: &vk::Queue,
         src_image: &vk::Image,
         extent: vk::Extent2D,
-        callback: impl FnOnce(ManagedImage) + Send + 'static,
+        callback: impl FnOnce(ManagedImage),
     ) -> Result<()> {
-        let now = std::time::Instant::now();
         let dst_image = ManagedImage::new(
             self,
             &vk::ImageCreateInfo::default()
                 .extent(vk::Extent3D {
-                    width: extent.width,
-                    height: extent.height,
+                    width: align_to(extent.width, 2),
+                    height: align_to(extent.height, 2),
                     depth: 1,
                 })
                 .image_type(vk::ImageType::TYPE_2D)
@@ -177,68 +244,71 @@ impl Device {
             UsageFlags::DOWNLOAD,
         )?;
 
-        let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
-
-        let command_pool = unsafe {
-            self.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-                    .queue_family_index(self.main_queue_family_idx),
-                None,
-            )?
-        };
-        let command_buffer = unsafe {
-            self.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default()
-                    .command_pool(command_pool)
-                    .command_buffer_count(1)
-                    .level(vk::CommandBufferLevel::PRIMARY),
-            )?[0]
-        };
-
-        unsafe {
-            self.begin_command_buffer(
-                command_buffer,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?
-        };
-
-        self.blit_image(
-            &command_buffer,
-            src_image,
-            extent,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            &dst_image.image,
-            extent,
-            vk::ImageLayout::UNDEFINED,
-        );
-
-        unsafe { self.end_command_buffer(command_buffer) }?;
-
-        let submit_info =
-            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
-        unsafe { self.queue_submit(*queue, &[submit_info], fence)? };
-        unsafe { self.wait_for_fences(&[fence], true, u64::MAX)? };
-
-        println!("Blit image: {:?}", now.elapsed());
+        self.one_time_submit(queue, |device, command_buffer| {
+            device.blit_image(
+                &command_buffer,
+                src_image,
+                extent,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                &dst_image.image,
+                extent,
+                vk::ImageLayout::UNDEFINED,
+            );
+        })?;
 
         callback(dst_image);
-
-        unsafe {
-            self.destroy_fence(fence, None);
-            self.free_command_buffers(command_pool, &[command_buffer]);
-            self.destroy_command_pool(command_pool, None);
-        }
 
         Ok(())
     }
 
-    pub fn create_host_buffer<T>(
-        &self,
+    pub fn create_host_buffer(
+        self: &Arc<Self>,
+        size: u64,
         usage: vk::BufferUsageFlags,
         memory_usage: gpu_alloc::UsageFlags,
-    ) -> Result<HostBuffer<T>> {
+    ) -> Result<HostBuffer> {
+        let buffer = unsafe {
+            self.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS),
+                None,
+            )?
+        };
+        let mem_requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
+
+        let mut memory =
+            self.alloc_memory(mem_requirements, memory_usage | UsageFlags::HOST_ACCESS)?;
+        unsafe { self.bind_buffer_memory(buffer, *memory.memory(), memory.offset()) }?;
+
+        let address = unsafe {
+            self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+        };
+
+        let ptr = unsafe {
+            memory.map(
+                AshMemoryDevice::wrap(self),
+                memory.offset(),
+                memory.size() as usize,
+            )?
+        };
+        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr(), size as _) };
+
+        Ok(HostBuffer {
+            address,
+            size,
+            buffer,
+            memory: ManuallyDrop::new(memory),
+            data,
+            device: self.clone(),
+        })
+    }
+
+    pub fn create_host_buffer_typed<T>(
+        self: Arc<Self>,
+        usage: vk::BufferUsageFlags,
+        memory_usage: gpu_alloc::UsageFlags,
+    ) -> Result<HostBufferTyped<T>> {
         let byte_size = (size_of::<T>()) as vk::DeviceSize;
         let buffer = unsafe {
             self.device.create_buffer(
@@ -257,6 +327,10 @@ impl Device {
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
+        self.name_object(
+            buffer,
+            &format!("HostBuffer<{}>", pretty_type_name::pretty_type_name::<T>()),
+        );
 
         let ptr = unsafe {
             memory.map(
@@ -265,22 +339,53 @@ impl Device {
                 memory.size() as usize,
             )?
         };
-        let ptr = unsafe { &mut *ptr.as_ptr().cast::<T>() };
+        let data = unsafe { &mut *ptr.as_ptr().cast::<T>() };
 
-        Ok(HostBuffer {
+        Ok(HostBufferTyped {
             address,
             buffer,
             memory: ManuallyDrop::new(memory),
-            data: ptr,
-            device: self.device.clone(),
-            allocator: self.allocator.clone(),
+            data,
+            device: self.clone(),
         })
+    }
+
+    pub fn get_info(&self) -> RendererInfo {
+        RendererInfo {
+            device_name: self.get_device_name().unwrap().to_string(),
+            device_type: self.get_device_type().to_string(),
+            vendor_name: self.get_vendor_name().to_string(),
+        }
+    }
+    pub fn get_device_name(&self) -> Result<&str, std::str::Utf8Error> {
+        unsafe { CStr::from_ptr(self.device_properties.device_name.as_ptr()) }.to_str()
+    }
+    pub fn get_device_type(&self) -> &str {
+        match self.device_properties.device_type {
+            vk::PhysicalDeviceType::CPU => "CPU",
+            vk::PhysicalDeviceType::INTEGRATED_GPU => "INTEGRATED_GPU",
+            vk::PhysicalDeviceType::DISCRETE_GPU => "DISCRETE_GPU",
+            vk::PhysicalDeviceType::VIRTUAL_GPU => "VIRTUAL_GPU",
+            _ => "OTHER",
+        }
+    }
+    pub fn get_vendor_name(&self) -> &str {
+        match self.device_properties.vendor_id {
+            0x1002 => "AMD",
+            0x1010 => "ImgTec",
+            0x10DE => "NVIDIA Corporation",
+            0x13B5 => "ARM",
+            0x5143 => "Qualcomm",
+            0x8086 => "INTEL Corporation",
+            _ => "Unknown vendor",
+        }
     }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_command_pool(self.command_pool, None);
             {
                 let mut allocator = self.allocator.lock();
                 allocator.cleanup(AshMemoryDevice::wrap(&self.device));
@@ -290,37 +395,81 @@ impl Drop for Device {
     }
 }
 
-pub struct HostBuffer<T: 'static> {
+pub struct HostBuffer {
+    pub address: u64,
+    pub size: u64,
+    pub buffer: vk::Buffer,
+    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
+    pub data: &'static mut [u8],
+    device: Arc<Device>,
+}
+
+impl std::ops::Deref for HostBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.data
+    }
+}
+
+impl std::ops::DerefMut for HostBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.data
+    }
+}
+
+impl Drop for HostBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_buffer(self.buffer, None);
+            let memory = ManuallyDrop::take(&mut self.memory);
+            self.device.dealloc_memory(memory);
+        }
+    }
+}
+
+pub struct HostBufferTyped<T: 'static> {
     pub address: u64,
     pub buffer: vk::Buffer,
     pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
     pub data: &'static mut T,
-    device: Arc<ash::Device>,
-    allocator: Arc<Mutex<GpuAllocator<DeviceMemory>>>,
+    device: Arc<Device>,
 }
 
-impl<T> std::ops::Deref for HostBuffer<T> {
+impl<T> std::ops::Deref for HostBufferTyped<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         self.data
     }
 }
 
-impl<T> std::ops::DerefMut for HostBuffer<T> {
+impl<T> std::ops::DerefMut for HostBufferTyped<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
     }
 }
 
-impl<T> Drop for HostBuffer<T> {
+impl<T> Drop for HostBufferTyped<T> {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_buffer(self.buffer, None);
-            {
-                let mut allocator = self.allocator.lock();
-                let memory = ManuallyDrop::take(&mut self.memory);
-                allocator.dealloc(AshMemoryDevice::wrap(&self.device), memory);
-            }
+            let memory = ManuallyDrop::take(&mut self.memory);
+            self.device.dealloc_memory(memory);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct RendererInfo {
+    pub device_name: String,
+    pub device_type: String,
+    pub vendor_name: String,
+}
+
+impl std::fmt::Display for RendererInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Vendor name: {}", self.vendor_name)?;
+        writeln!(f, "Device name: {}", self.device_name)?;
+        writeln!(f, "Device type: {}", self.device_type)?;
+        Ok(())
     }
 }

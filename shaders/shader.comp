@@ -1,0 +1,26 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+
+layout(set = 0, binding = 0) uniform sampler gsamplers[];
+layout(set = 0, binding = 1) uniform texture2D gtextures[];
+
+layout(std430, push_constant) uniform PushConstant {
+    vec3 pos;
+    float time;
+    vec2 resolution;
+    vec2 mouse;
+    bool mouse_pressed;
+    uint frame;
+    float time_delta;
+    float record_time;
+}
+pc;
+
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+void main() {
+    if (gl_GlobalInvocationID.x >= pc.resolution.x ||
+        gl_GlobalInvocationID.y >= pc.resolution.y) {
+        return;
+    }
+}

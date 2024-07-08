@@ -57,15 +57,19 @@ fn watch_callback(proxy: EventLoopProxy<UserEvent>) -> impl FnMut(DebounceEventR
                 .map(|event| event.path)
                 .next()
             {
-                if path.extension() == Some(OsStr::new("glsl")) {
-                    proxy
+                if path.extension() == Some(OsStr::new("glsl"))
+                    || path.extension() == Some(OsStr::new("frag"))
+                    || path.extension() == Some(OsStr::new("vert"))
+                    || path.extension() == Some(OsStr::new("comp"))
+                {
+                    let _ = proxy
                         .send_event(UserEvent::Glsl {
                             path: path.canonicalize().unwrap(),
                         })
-                        .expect("Event Loop has been dropped");
+                        .map_err(|err| log::error!("Event Loop has been dropped: {err}"));
                 }
             }
         }
-        Err(errors) => eprintln!("File watcher error: {errors}"),
+        Err(errors) => log::error!("File watcher error: {errors}"),
     }
 }

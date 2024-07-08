@@ -1,25 +1,43 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, ffi::CStr, sync::Arc};
 
-use crate::{
-    device::{Device, DeviceExt},
-    surface::Surface,
-};
+use crate::{device::Device, surface::Surface};
 
 use anyhow::{Context, Result};
 use ash::{ext, khr, vk, Entry};
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+unsafe extern "system" fn vulkan_debug_callback(
+    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _user_data: *mut std::os::raw::c_void,
+) -> vk::Bool32 {
+    let callback_data = &unsafe { *p_callback_data };
+    let message = unsafe { CStr::from_ptr(callback_data.p_message) }.to_string_lossy();
+
+    if message.starts_with("Validation Performance Warning") {
+    } else if message.starts_with("Validation Warning: [ VUID_Undefined ]") {
+        log::warn!("{:?}:\n{:?}: {}\n", message_severity, message_type, message,);
+    } else {
+        log::error!("{:?}:\n{:?}: {}\n", message_severity, message_type, message,);
+    }
+
+    vk::FALSE
+}
+
 pub struct Instance {
     pub entry: ash::Entry,
-    pub instance: ash::Instance,
+    pub inner: ash::Instance,
+    dbg_loader: ext::debug_utils::Instance,
+    dbg_callbk: vk::DebugUtilsMessengerEXT,
 }
 
 impl std::ops::Deref for Instance {
     type Target = ash::Instance;
 
     fn deref(&self) -> &Self::Target {
-        &self.instance
+        &self.inner
     }
 }
 
@@ -31,6 +49,7 @@ impl Instance {
             c"VK_LAYER_KHRONOS_validation".as_ptr(),
         ];
         let mut extensions = vec![
+            ext::debug_utils::NAME.as_ptr(),
             khr::surface::NAME.as_ptr(),
             khr::display::NAME.as_ptr(),
             khr::get_physical_device_properties2::NAME.as_ptr(),
@@ -49,8 +68,31 @@ impl Instance {
             .flags(vk::InstanceCreateFlags::default())
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions);
-        let instance = unsafe { entry.create_instance(&instance_info, None) }?;
-        Ok(Self { entry, instance })
+        let inner = unsafe { entry.create_instance(&instance_info, None) }?;
+
+        let dbg_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                    // | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+                    // | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
+            )
+            .message_type(
+                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                    | vk::DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
+                    | vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+            )
+            .pfn_user_callback(Some(vulkan_debug_callback));
+        let dbg_loader = ext::debug_utils::Instance::new(&entry, &inner);
+        let dbg_callbk = unsafe { dbg_loader.create_debug_utils_messenger(&dbg_info, None)? };
+
+        Ok(Self {
+            dbg_loader,
+            dbg_callbk,
+            entry,
+            inner,
+        })
     }
 
     pub fn create_device_and_queues(
@@ -68,6 +110,7 @@ impl Instance {
             khr::buffer_device_address::NAME,
             khr::create_renderpass2::NAME,
             ext::descriptor_indexing::NAME,
+            khr::format_feature_flags2::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -134,10 +177,14 @@ impl Instance {
         let mut feature_descriptor_indexing =
             vk::PhysicalDeviceDescriptorIndexingFeatures::default()
                 .runtime_descriptor_array(true)
-                .descriptor_binding_variable_descriptor_count(true)
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_storage_image_array_non_uniform_indexing(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true)
+                .shader_uniform_buffer_array_non_uniform_indexing(true)
+                .descriptor_binding_sampled_image_update_after_bind(true)
                 .descriptor_binding_partially_bound(true)
-                .descriptor_binding_update_unused_while_pending(true)
-                .descriptor_binding_sampled_image_update_after_bind(true);
+                .descriptor_binding_variable_descriptor_count(true)
+                .descriptor_binding_update_unused_while_pending(true);
         let mut feature_buffer_device_address =
             vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
         let mut feature_synchronization2 =
@@ -148,7 +195,10 @@ impl Instance {
         let mut feature_dynamic_rendering =
             vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
-        let mut features = vk::PhysicalDeviceFeatures::default().shader_int64(true);
+        let mut features = vk::PhysicalDeviceFeatures::default()
+            .shader_storage_image_write_without_format(true)
+            .shader_storage_image_read_without_format(true)
+            .shader_int64(true);
         if cfg!(debug_assertions) {
             features.robust_buffer_access = 1;
         }
@@ -166,33 +216,9 @@ impl Instance {
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_device_extensions)
             .push_next(&mut default_features);
-        let device = unsafe { self.instance.create_device(pdevice, &device_info, None) }?;
+        let device = unsafe { self.inner.create_device(pdevice, &device_info, None) }?;
 
-        fn fmt_size(n: u64) -> String {
-            if n < 1_000 {
-                format!("{:>3} B", n)
-            } else if n < 1_000_000 {
-                format!("{:>3} kB", n >> 10)
-            } else if n < 1_000_000_000 {
-                format!("{:>3} MB", n >> 20)
-            } else {
-                format!("{:>3} GB", n >> 30)
-            }
-        }
         let memory_properties = unsafe { self.get_physical_device_memory_properties(pdevice) };
-
-        for mp in &memory_properties.memory_types[..memory_properties.memory_type_count as _] {
-            if !mp.property_flags.is_empty() {
-                println!("Memory: {:?}", mp.property_flags);
-                let heap = memory_properties.memory_heaps[mp.heap_index as usize];
-                println!(
-                    "\tMemory Heap {}: Size {:?} | Type {:?}",
-                    mp.heap_index,
-                    fmt_size(heap.size),
-                    heap.flags
-                )
-            }
-        }
 
         let dynamic_rendering = khr::dynamic_rendering::Device::new(self, &device);
 
@@ -201,14 +227,36 @@ impl Instance {
         let allocator =
             gpu_alloc::GpuAllocator::new(gpu_alloc::Config::i_am_potato(), device_alloc_properties);
 
+        let mut descriptor_indexing_props =
+            vk::PhysicalDeviceDescriptorIndexingProperties::default();
+        let mut device_properties =
+            vk::PhysicalDeviceProperties2::default().push_next(&mut descriptor_indexing_props);
+        unsafe { self.get_physical_device_properties2(pdevice, &mut device_properties) };
+
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+                    .queue_family_index(main_queue_family_idx),
+                None,
+            )?
+        };
+
+        {};
+        let dbg_utils = ext::debug_utils::Device::new(&self.inner, &device);
+
         let device = Device {
             physical_device: pdevice,
+            device_properties: device_properties.properties,
+            descriptor_indexing_props,
             main_queue_family_idx,
             transfer_queue_family_idx,
+            command_pool,
             memory_properties,
             allocator: Arc::new(Mutex::new(allocator)),
-            device: Arc::new(device),
-            ext: Arc::new(DeviceExt { dynamic_rendering }),
+            device,
+            dynamic_rendering,
+            dbg_utils,
         };
         let main_queue = unsafe { device.get_device_queue(main_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(transfer_queue_family_idx, 0) };
@@ -220,12 +268,16 @@ impl Instance {
         &self,
         handle: &(impl HasDisplayHandle + HasWindowHandle),
     ) -> Result<Surface> {
-        Surface::new(&self.entry, &self.instance, handle)
+        Surface::new(&self.entry, &self.inner, handle)
     }
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        unsafe { self.instance.destroy_instance(None) };
+        unsafe {
+            self.dbg_loader
+                .destroy_debug_utils_messenger(self.dbg_callbk, None);
+            self.inner.destroy_instance(None);
+        }
     }
 }

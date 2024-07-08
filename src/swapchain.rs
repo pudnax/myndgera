@@ -6,17 +6,14 @@ use ash::{
     vk::{self, CompositeAlphaFlagsKHR},
 };
 
-use crate::{
-    device::{Device, DeviceExt},
-    surface::Surface,
-};
+use crate::{device::Device, surface::Surface, ImageDimensions};
 
 pub struct Frame {
     command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
     render_finished_semaphore: vk::Semaphore,
     pub present_finished: vk::Fence,
-    device: Arc<ash::Device>,
+    device: Arc<Device>,
 }
 
 impl Frame {
@@ -34,7 +31,7 @@ impl Frame {
 }
 
 impl Frame {
-    fn new(device: &Arc<ash::Device>, command_pool: &vk::CommandPool) -> VkResult<Self> {
+    fn new(device: &Arc<Device>, command_pool: &vk::CommandPool) -> VkResult<Self> {
         let present_finished = unsafe {
             device.create_fence(
                 &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::default()),
@@ -64,22 +61,21 @@ pub struct FrameGuard {
     frame: Frame,
     extent: vk::Extent2D,
     image_idx: usize,
-    device: Arc<ash::Device>,
-    ext: Arc<DeviceExt>,
+    device: Arc<Device>,
 }
 
 pub struct Swapchain {
-    images: Vec<vk::Image>,
-    views: Vec<vk::ImageView>,
-    frames: VecDeque<Frame>,
+    pub images: Vec<vk::Image>,
+    pub views: Vec<vk::ImageView>,
+    pub frames: VecDeque<Frame>,
     command_pool: vk::CommandPool,
-    current_image: usize,
-    format: vk::SurfaceFormatKHR,
-    extent: vk::Extent2D,
+    pub current_image: usize,
+    pub format: vk::SurfaceFormatKHR,
+    pub extent: vk::Extent2D,
+    pub image_dimensions: ImageDimensions,
     inner: vk::SwapchainKHR,
     loader: khr::swapchain::Device,
-    device: Arc<ash::Device>,
-    ext: Arc<DeviceExt>,
+    device: Arc<Device>,
 }
 
 impl Swapchain {
@@ -100,7 +96,7 @@ impl Swapchain {
     }
 
     pub fn new(
-        device: &Device,
+        device: &Arc<Device>,
         surface: &Surface,
         swapchain_loader: khr::swapchain::Device,
     ) -> VkResult<Self> {
@@ -123,8 +119,6 @@ impl Swapchain {
             .max(capabilities.min_image_count);
 
         let queue_family_index = [device.main_queue_family_idx];
-        let swapchain_usage =
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
 
         let mut extent = capabilities.current_extent;
         //Sadly _current_extent_ can be outside the min/max capabilities :(.
@@ -137,7 +131,7 @@ impl Swapchain {
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
             .image_format(format.format)
-            .image_usage(swapchain_usage)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
             .image_extent(extent)
             .image_color_space(format.color_space)
             .min_image_count(image_count)
@@ -153,22 +147,7 @@ impl Swapchain {
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
         let views = images
             .iter()
-            .map(|img| {
-                let info = vk::ImageViewCreateInfo::default()
-                    .image(*img)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(format.format)
-                    .components(vk::ComponentMapping::default())
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    );
-                unsafe { device.create_image_view(&info, None) }
-            })
+            .map(|img| device.create_2d_view(img, format.format))
             .collect::<VkResult<Vec<_>>>()?;
 
         let frames = VecDeque::new();
@@ -182,18 +161,22 @@ impl Swapchain {
             )?
         };
 
+        let memory_reqs = unsafe { device.get_image_memory_requirements(images[0]) };
+        let image_dimensions =
+            ImageDimensions::new(extent.width as _, extent.height as _, memory_reqs.alignment);
+
         Ok(Self {
             images,
             views,
             frames,
             command_pool,
             current_image: 0,
+            image_dimensions,
             format: *format,
             extent,
             inner: swapchain,
             loader: swapchain_loader,
-            device: device.device.clone(),
-            ext: device.ext.clone(),
+            device: device.clone(),
         })
     }
 
@@ -214,13 +197,16 @@ impl Swapchain {
         let old_swapchain = self.inner;
 
         let queue_family_index = [device.main_queue_family_idx];
-        let swapchain_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
-        self.extent = capabilities.current_extent;
+
+        let extent = capabilities.current_extent;
+        self.extent.width = extent.width.min(capabilities.max_image_extent.width);
+        self.extent.height = extent.height.min(capabilities.max_image_extent.height);
+
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
             .old_swapchain(old_swapchain)
             .image_format(self.format.format)
-            .image_usage(swapchain_usage)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
             .image_extent(self.extent)
             .image_color_space(self.format.color_space)
             .min_image_count(self.images.len() as u32)
@@ -228,7 +214,7 @@ impl Swapchain {
             .queue_family_indices(&queue_family_index)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
-            .composite_alpha(capabilities.supported_composite_alpha)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true);
         self.inner = unsafe { self.loader.create_swapchain(&swapchain_create_info, None)? };
@@ -239,23 +225,13 @@ impl Swapchain {
         self.views = self
             .images
             .iter()
-            .map(|img| {
-                let info = vk::ImageViewCreateInfo::default()
-                    .image(*img)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(self.format.format)
-                    .components(vk::ComponentMapping::default())
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    );
-                unsafe { device.create_image_view(&info, None) }
-            })
+            .map(|img| device.create_2d_view(img, self.format.format))
             .collect::<VkResult<Vec<_>>>()?;
+
+        let memory_reqs = unsafe { device.get_image_memory_requirements(self.images[0]) };
+        self.image_dimensions =
+            ImageDimensions::new(extent.width as _, extent.height as _, memory_reqs.alignment);
+
         Ok(())
     }
 
@@ -327,7 +303,6 @@ impl Swapchain {
             extent: self.extent,
             image_idx: self.current_image,
             device: self.device.clone(),
-            ext: self.ext.clone(),
         })
     }
 
@@ -365,6 +340,7 @@ impl Swapchain {
         };
 
         self.frames.push_back(frame);
+
         let image_indices = [frame_guard.image_idx as u32];
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_semaphores)
@@ -396,6 +372,10 @@ impl Drop for Swapchain {
 }
 
 impl FrameGuard {
+    pub fn command_buffer(&self) -> &vk::CommandBuffer {
+        &self.frame.command_buffer
+    }
+
     pub fn begin_rendering(&mut self, view: &vk::ImageView, color: [f32; 4]) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue { float32: color },
@@ -412,7 +392,7 @@ impl FrameGuard {
             .layer_count(1)
             .color_attachments(&color_attachments);
         unsafe {
-            self.ext
+            self.device
                 .dynamic_rendering
                 .cmd_begin_rendering(self.frame.command_buffer, &rendering_info)
         };
@@ -431,22 +411,40 @@ impl FrameGuard {
         }]);
     }
 
-    pub fn draw(&mut self, vertex_count: u32, first_vertex: u32) {
+    pub fn draw(
+        &mut self,
+        vertex_count: u32,
+        first_vertex: u32,
+        instance_count: u32,
+        first_instance: u32,
+    ) {
         unsafe {
-            self.device
-                .cmd_draw(self.frame.command_buffer, vertex_count, 1, first_vertex, 0)
+            self.device.cmd_draw(
+                self.frame.command_buffer,
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            )
         };
     }
 
-    pub fn draw_indexed(&mut self, index_count: u32, first_index: u32, vertex_offset: i32) {
+    pub fn draw_indexed(
+        &mut self,
+        index_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        instance_count: u32,
+        first_instance: u32,
+    ) {
         unsafe {
             self.device.cmd_draw_indexed(
                 self.frame.command_buffer,
                 index_count,
-                1,
+                instance_count,
                 first_index,
                 vertex_offset,
-                0,
+                first_instance,
             )
         };
     }
@@ -457,7 +455,7 @@ impl FrameGuard {
                 self.frame.command_buffer,
                 buffer,
                 offset,
-                vk::IndexType::UINT16,
+                vk::IndexType::UINT32,
             )
         };
     }
@@ -471,20 +469,19 @@ impl FrameGuard {
         };
     }
 
-    pub fn bind_descriptor_set(
+    pub fn bind_descriptor_sets(
         &self,
         bind_point: vk::PipelineBindPoint,
-        descriptor_set: vk::DescriptorSet,
         pipeline_layout: vk::PipelineLayout,
+        descriptor_sets: &[vk::DescriptorSet],
     ) {
-        let descriptor_set = [descriptor_set];
         unsafe {
             self.device.cmd_bind_descriptor_sets(
                 self.frame.command_buffer,
                 bind_point,
                 pipeline_layout,
                 0,
-                &descriptor_set,
+                descriptor_sets,
                 &[],
             )
         };
@@ -530,9 +527,13 @@ impl FrameGuard {
         }
     }
 
+    pub fn dispatch(&self, x: u32, y: u32, z: u32) {
+        unsafe { self.device.cmd_dispatch(self.frame.command_buffer, x, y, z) };
+    }
+
     pub fn end_rendering(&mut self) {
         unsafe {
-            self.ext
+            self.device
                 .dynamic_rendering
                 .cmd_end_rendering(self.frame.command_buffer)
         };

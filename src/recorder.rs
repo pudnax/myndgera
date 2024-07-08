@@ -1,5 +1,4 @@
-use anyhow::Result;
-use std::io;
+use anyhow::{Context, Result};
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -9,11 +8,8 @@ use std::{
     time::Instant,
 };
 
-use crate::{ImageDimensions, ManagedImage};
+use crate::{create_folder, ImageDimensions, ManagedImage, SCREENSHOT_FOLDER, VIDEO_FOLDER};
 use crossbeam_channel::{Receiver, Sender};
-
-pub const VIDEO_FOLDER: &str = "recordings";
-pub const SCREENSHOT_FOLDER: &str = "screenshots";
 
 pub enum RecordEvent {
     Start(ImageDimensions),
@@ -68,9 +64,20 @@ impl Recorder {
         self.ffmpeg_installed
     }
 
+    pub fn screenshot(&self, image: ManagedImage) {
+        let _ = self
+            .sender
+            .send(RecordEvent::Screenshot(image))
+            .context("Failed to send screenshot");
+    }
+
     pub fn start(&mut self, dims: ImageDimensions) {
         self.is_active = true;
         self.send(RecordEvent::Start(dims));
+    }
+
+    pub fn record(&self, image: ManagedImage) {
+        self.send(RecordEvent::Record(image));
     }
 
     pub fn finish(&mut self) {
@@ -100,19 +107,21 @@ fn new_ffmpeg_command(image_dimensions: ImageDimensions, filename: &str) -> Resu
         "-framerate", "60",
         "-pix_fmt", "rgba",
         "-f", "rawvideo",
+        // "-vcodec", "rawvideo",
         "-i", "pipe:",
         "-c:v", "libx264",
-        "-crf", "25",
-        "-preset", "ultrafast",
-        "-tune", "animation",
-        "-color_primaries", "bt709",
-        "-color_trc", "bt709",
-        "-colorspace", "bt709",
+        "-crf", "23",
+        // "-preset", "ultrafast",
+        // "-tune", "animation",
+        // "-color_primaries", "bt709",
+        // "-color_trc", "bt709",
+        // "-colorspace", "bt709",
         "-color_range", "tv",
         "-chroma_sample_location", "center",
-        "-pix_fmt", "yuv420p",
+        // "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-y",
+        "-vf", "scale=sws_flags=lanczos:in_color_matrix=bt709,format=yuv444p",
+        // "-y",
     ];
 
     let mut command = Command::new("ffmpeg");
@@ -120,8 +129,7 @@ fn new_ffmpeg_command(image_dimensions: ImageDimensions, filename: &str) -> Resu
         .arg("-video_size")
         .arg(format!(
             "{}x{}",
-            image_dimensions.unpadded_bytes_per_row / 4,
-            image_dimensions.height
+            image_dimensions.width, image_dimensions.height
         ))
         .args(args)
         .arg(filename)
@@ -151,7 +159,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                 let dir_path = Path::new(VIDEO_FOLDER);
                 let filename = dir_path.join(format!(
                     "record-{}.mp4",
-                    chrono::Local::now().format("%d-%m-%Y-%H-%M-%S")
+                    chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
                 ));
                 recorder =
                     Some(new_ffmpeg_command(image_dimensions, filename.to_str().unwrap()).unwrap());
@@ -163,19 +171,21 @@ fn record_thread(rx: Receiver<RecordEvent>) {
 
                     let padded_bytes = frame.image_dimensions.padded_bytes_per_row as _;
                     let unpadded_bytes = frame.image_dimensions.unpadded_bytes_per_row as _;
-                    let _ = frame
-                        .map_memory()
-                        .map_err(|err| eprintln!("Failed to map memory: {err}"));
-                    let Some(data) = frame.data.as_ref() else {
-                        continue;
+                    let data = match frame.map_memory() {
+                        Ok(data) => data,
+                        Err(err) => {
+                            log::error!("Failed to map memory: {err}");
+                            continue;
+                        }
                     };
+
                     for chunk in data
                         .chunks(padded_bytes)
                         .map(|chunk| &chunk[..unpadded_bytes])
                     {
-                        writer.write_all(chunk).unwrap();
+                        let _ = writer.write_all(chunk);
                     }
-                    writer.flush().unwrap();
+                    let _ = writer.flush();
                 }
             }
             RecordEvent::Finish => {
@@ -183,37 +193,25 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                     p.process.wait().unwrap();
                 }
                 recorder = None;
-                eprintln!("Recording finished");
+                println!("Recording finished");
             }
             RecordEvent::Screenshot(mut frame) => {
-                let _ = frame
-                    .map_memory()
-                    .map_err(|err| eprintln!("Failed to map memory: {err}"));
-                let Some(data) = frame.data.as_ref() else {
-                    continue;
-                };
-                match save_screenshot(data, frame.image_dimensions) {
-                    Ok(_) => {}
+                let image_dimensions = frame.image_dimensions;
+                let data = match frame.map_memory() {
+                    Ok(data) => data,
                     Err(err) => {
-                        eprintln!("{err}")
+                        log::error!("Failed to map memory: {err}");
+                        continue;
                     }
-                }
+                };
+
+                let _ = save_screenshot(data, image_dimensions).map_err(|err| log::error!("{err}"));
             }
             RecordEvent::CloseThread => {
                 return;
             }
         }
     }
-}
-
-fn create_folder<P: AsRef<Path>>(name: P) -> io::Result<()> {
-    match std::fs::create_dir(name) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
-    }
-
-    Ok(())
 }
 
 pub fn save_screenshot(frame: &[u8], image_dimensions: ImageDimensions) -> Result<()> {
@@ -244,6 +242,6 @@ pub fn save_screenshot(frame: &[u8], image_dimensions: ImageDimensions) -> Resul
         writer.write_all(chunk)?;
     }
     writer.finish()?;
-    eprintln!("Encode image: {:#.2?}", now.elapsed());
+    println!("Encode image: {:#.2?}", now.elapsed());
     Ok(())
 }
