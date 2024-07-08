@@ -11,14 +11,15 @@ layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
-vec4 Tex(uint id) {
+vec4 Tex(uint tex_id, uint smp_id, vec2 uv) {
     return texture(
-        nonuniformEXT(sampler2D(gtextures[id], gsamplers[LINER_SAMPL])), in_uv);
+        nonuniformEXT(sampler2D(gtextures[tex_id], gsamplers[smp_id])), uv);
 }
-vec4 Tex(uint id, vec2 uv) {
-    return texture(
-        nonuniformEXT(sampler2D(gtextures[id], gsamplers[LINER_SAMPL])), uv);
-}
+vec4 Tex(uint tex_id, uint smp_id) { return Tex(tex_id, smp_id, in_uv); }
+vec4 TexLinear(uint tex_id, vec2 uv) { return Tex(tex_id, LINEAR_SAMPL, uv); }
+vec4 TexLinear(uint tex_id) { return Tex(tex_id, LINEAR_SAMPL, in_uv); }
+vec4 TexNear(uint tex_id, vec2 uv) { return Tex(tex_id, NEAREST_SAMPL, uv); }
+vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
 
 layout(std430, push_constant) uniform PushConstant {
     vec3 pos;
@@ -102,7 +103,7 @@ const uint DITHER_TEX = 2;
 const uint NOISE_TEX = 3;
 const uint BLUE_TEX = 4;
 
-const uint LINER_SAMPL = 0;
+const uint LINEAR_SAMPL = 0;
 const uint NEAREST_SAMPL = 1;
 
 vec4 ASSERT_COL = vec4(0.);

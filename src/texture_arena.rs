@@ -14,14 +14,11 @@ const NEAREST_SAMPLER_IDX: u32 = 1;
 
 pub const DUMMY_IMAGE_IDX: usize = 0;
 pub const PREV_FRAME_IDX: usize = 1;
-pub const GENERIC_IMAGE1_IDX: usize = 2;
-pub const GENERIC_IMAGE2_IDX: usize = 3;
-pub const DITHER_IMAGE_IDX: usize = 4;
-pub const NOISE_IMAGE_IDX: usize = 5;
-pub const BLUE_IMAGE_IDX: usize = 6;
+pub const DITHER_IMAGE_IDX: usize = 2;
+pub const NOISE_IMAGE_IDX: usize = 3;
+pub const BLUE_IMAGE_IDX: usize = 4;
 
-pub const SCREENSIZED_IMAGE_INDICES: [usize; 3] =
-    [PREV_FRAME_IDX, GENERIC_IMAGE1_IDX, GENERIC_IMAGE2_IDX];
+pub const SCREENSIZED_IMAGE_INDICES: [usize; 1] = [PREV_FRAME_IDX];
 
 const IMAGES_COUNT: u32 = 2048;
 const SAMPLER_COUNT: u32 = 8;
@@ -65,26 +62,23 @@ impl TextureArena {
             )?
         };
 
-        let binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-            | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING;
+        let binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND;
         let binding_flags = [
             binding_flags,
-            binding_flags | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
+            binding_flags
+                | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
+                | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
         ];
         let mut binding_flags =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
         let sampler_set_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
+            .binding(SAMPLER_SET)
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS | vk::ShaderStageFlags::COMPUTE)
-            .descriptor_count(
-                device
-                    .descriptor_indexing_props
-                    .max_descriptor_set_update_after_bind_samplers,
-            );
+            .descriptor_count(SAMPLER_COUNT);
         let image_set_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
+            .binding(IMAGE_SET)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS | vk::ShaderStageFlags::COMPUTE)
             .descriptor_count(
@@ -169,7 +163,7 @@ impl TextureArena {
             .tiling(vk::ImageTiling::OPTIMAL);
         texture_arena.push_image(queue, image_info, &[255, 255, 0, 255])?;
 
-        let image_infos: [_; 3] = std::array::from_fn(|_| {
+        let image_infos: [_; 1] = std::array::from_fn(|_| {
             image_info.extent(vk::Extent3D {
                 width: swapchain.extent.width,
                 height: swapchain.extent.height,
