@@ -34,7 +34,7 @@ void main() {
     vec3 col = vec3(uv, 1.);
     col *= d;
 
-    vec4 tex = texture(sampler2D(gtextures[DITHER_TEX], gsamplers[0]), in_uv);
+    vec4 tex = texture(sampler2D(gtextures[1], gsamplers[0]), in_uv);
     col *= tex.rgb;
 
     out_color = vec4(col, 1.0);

@@ -131,7 +131,11 @@ impl Swapchain {
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
             .image_format(format.format)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+            .image_usage(
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+            )
             .image_extent(extent)
             .image_color_space(format.color_space)
             .min_image_count(image_count)
@@ -206,7 +210,11 @@ impl Swapchain {
             .surface(**surface)
             .old_swapchain(old_swapchain)
             .image_format(self.format.format)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+            .image_usage(
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+            )
             .image_extent(self.extent)
             .image_color_space(self.format.color_space)
             .min_image_count(self.images.len() as u32)

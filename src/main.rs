@@ -14,7 +14,7 @@ use myndgera::{
     ComputeHandle, Device, FragmentOutputDesc, FragmentShaderDesc, Input, Instance, PipelineArena,
     PushConstant, Recorder, RenderHandle, ShaderKind, ShaderSource, Surface, Swapchain,
     TextureArena, UserEvent, VertexInputDesc, VertexShaderDesc, Watcher, COLOR_SUBRESOURCE_MASK,
-    PREV_FRAME_IMAGE_IDX, SCREENSIZED_IMAGE_INDICES, SHADER_FOLDER,
+    PREV_FRAME_IDX, SCREENSIZED_IMAGE_INDICES, SHADER_FOLDER,
 };
 use winit::{
     application::ApplicationHandler,
@@ -218,11 +218,13 @@ impl AppInit {
         self.push_constant.wh = [extent.width as f32, extent.height as f32];
 
         for i in SCREENSIZED_IMAGE_INDICES {
-            self.texture_arena.infos[i].extent.width = extent.width;
-            self.texture_arena.infos[i].extent.height = extent.height;
+            if let Some(info) = &mut self.texture_arena.infos[i] {
+                info.extent.width = extent.width;
+                info.extent.height = extent.height;
+            }
         }
         self.texture_arena
-            .update_images(&SCREENSIZED_IMAGE_INDICES)?;
+            .update_images_by_idx(&SCREENSIZED_IMAGE_INDICES)?;
 
         Ok(())
     }
@@ -423,7 +425,7 @@ impl ApplicationHandler<UserEvent> for AppInit {
                         .subresource_range(COLOR_SUBRESOURCE_MASK)
                         .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                         .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
-                        .image(self.texture_arena.images[PREV_FRAME_IMAGE_IDX]);
+                        .image(self.texture_arena.images[PREV_FRAME_IDX]);
                     self.device.cmd_pipeline_barrier2(
                         *frame.command_buffer(),
                         &vk::DependencyInfo::default()
@@ -452,7 +454,7 @@ impl ApplicationHandler<UserEvent> for AppInit {
                     self.swapchain.get_current_image(),
                     self.swapchain.extent(),
                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    &self.texture_arena.images[PREV_FRAME_IMAGE_IDX],
+                    &self.texture_arena.images[PREV_FRAME_IDX],
                     self.swapchain.extent(),
                     vk::ImageLayout::UNDEFINED,
                 );

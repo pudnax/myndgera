@@ -1,14 +1,15 @@
 const float PI = acos(-1.);
 const float TAU = 2. * PI;
 
-const uint PREV_TEX = 0;
-const uint GENERIC_TEX1 = 1;
-const uint GENERIC_TEX2 = 2;
-const uint DITHER_TEX = 3;
-const uint NOISE_TEX = 4;
-const uint BLUE_TEX = 5;
+const uint DUMMY_TEX = 0;
+const uint PREV_FRAME_TEX = 1;
+const uint GENERIC_TEX1 = 2;
+const uint GENERIC_TEX2 = 3;
+const uint DITHER_TEX = 4;
+const uint NOISE_TEX = 5;
+const uint BLUE_TEX = 6;
 
-const uint LINER_SAMPL = 0;
+const uint LINEAR_SAMPL = 0;
 const uint NEAREST_SAMPL = 1;
 
 const float HALF_WIDTH = 1.0;

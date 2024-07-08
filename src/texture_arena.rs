@@ -1,26 +1,27 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use ash::{
-    prelude::VkResult,
-    vk::{self, DeviceMemory},
-};
+use ash::vk::{self, DeviceMemory, Handle};
 use gpu_alloc::{MemoryBlock, UsageFlags};
 
 use crate::{Device, Swapchain, COLOR_SUBRESOURCE_MASK};
 
-pub const LINEAR_SAMPLER_IDX: usize = 0;
-pub const NEAREST_SAMPLER_IDX: usize = 1;
+const SAMPLER_SET: u32 = 0;
+const IMAGE_SET: u32 = 1;
 
-pub const PREV_FRAME_IMAGE_IDX: usize = 0;
-pub const GENERIC_IMAGE1_IDX: usize = 1;
-pub const GENERIC_IMAGE2_IDX: usize = 2;
-pub const DITHER_IMAGE_IDX: usize = 3;
-pub const NOISE_IMAGE_IDX: usize = 4;
-pub const BLUE_IMAGE_IDX: usize = 5;
+const LINEAR_SAMPLER_IDX: u32 = 0;
+const NEAREST_SAMPLER_IDX: u32 = 1;
+
+pub const DUMMY_IMAGE_IDX: usize = 0;
+pub const PREV_FRAME_IDX: usize = 1;
+pub const GENERIC_IMAGE1_IDX: usize = 2;
+pub const GENERIC_IMAGE2_IDX: usize = 3;
+pub const DITHER_IMAGE_IDX: usize = 4;
+pub const NOISE_IMAGE_IDX: usize = 5;
+pub const BLUE_IMAGE_IDX: usize = 6;
 
 pub const SCREENSIZED_IMAGE_INDICES: [usize; 3] =
-    [PREV_FRAME_IMAGE_IDX, GENERIC_IMAGE1_IDX, GENERIC_IMAGE2_IDX];
+    [PREV_FRAME_IDX, GENERIC_IMAGE1_IDX, GENERIC_IMAGE2_IDX];
 
 const IMAGES_COUNT: u32 = 2048;
 const SAMPLER_COUNT: u32 = 8;
@@ -28,7 +29,7 @@ const SAMPLER_COUNT: u32 = 8;
 pub struct TextureArena {
     pub images: Vec<vk::Image>,
     pub memories: Vec<Option<MemoryBlock<DeviceMemory>>>,
-    pub infos: Vec<vk::ImageCreateInfo<'static>>,
+    pub infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
     pub views: Vec<vk::ImageView>,
     pub samplers: [vk::Sampler; SAMPLER_COUNT as usize],
     descriptor_pool: vk::DescriptorPool,
@@ -110,49 +111,6 @@ impl TextureArena {
             .push_next(&mut variable_info);
         let images_set = unsafe { device.allocate_descriptor_sets(&allocate_info)? }[0];
 
-        let image_infos: [_; 3] = std::array::from_fn(|_| {
-            vk::ImageCreateInfo::default()
-                .extent(vk::Extent3D {
-                    width: swapchain.extent.width,
-                    height: swapchain.extent.height,
-                    depth: 1,
-                })
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
-                .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .mip_levels(1)
-                .array_layers(1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-        });
-
-        let (images, memories) = image_infos
-            .iter()
-            .map(|info| {
-                let (image, memory) = device.create_image(info, UsageFlags::FAST_DEVICE_ACCESS)?;
-                Ok((image, Some(memory)))
-            })
-            .collect::<Result<(Vec<_>, Vec<_>)>>()?;
-
-        let views = images
-            .iter()
-            .zip(image_infos)
-            .map(|(image, info)| device.create_2d_view(image, info.format))
-            .collect::<VkResult<Vec<_>>>()?;
-
-        for (i, view) in views.iter().enumerate() {
-            let image_info = vk::DescriptorImageInfo::default()
-                .image_view(*view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(images_set)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .dst_binding(1)
-                .image_info(std::slice::from_ref(&image_info))
-                .dst_array_element(i as _);
-            unsafe { device.update_descriptor_sets(&[write], &[]) };
-        }
-
         let mut samplers = [vk::Sampler::null(); SAMPLER_COUNT as usize];
         let mut sampler_create_info = vk::SamplerCreateInfo::default()
             .min_filter(vk::Filter::LINEAR)
@@ -167,26 +125,28 @@ impl TextureArena {
         let mut desc_write = vk::WriteDescriptorSet::default()
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .dst_set(images_set)
-            .dst_binding(0)
+            .dst_binding(SAMPLER_SET)
             .image_info(std::slice::from_ref(&descriptor_image_info))
-            .dst_array_element(0);
+            .dst_array_element(LINEAR_SAMPLER_IDX);
         unsafe { device.update_descriptor_sets(&[desc_write], &[]) };
-        samplers[0] = sampler;
+        samplers[LINEAR_SAMPLER_IDX as usize] = sampler;
 
         sampler_create_info = sampler_create_info
             .mag_filter(vk::Filter::NEAREST)
             .min_filter(vk::Filter::NEAREST);
         let sampler = unsafe { device.create_sampler(&sampler_create_info, None)? };
         let descriptor_image_info = vk::DescriptorImageInfo::default().sampler(sampler);
-        desc_write = desc_write.image_info(std::slice::from_ref(&descriptor_image_info));
+        desc_write = desc_write
+            .dst_array_element(NEAREST_SAMPLER_IDX)
+            .image_info(std::slice::from_ref(&descriptor_image_info));
         unsafe { device.update_descriptor_sets(&[desc_write], &[]) };
-        samplers[1] = sampler;
+        samplers[NEAREST_SAMPLER_IDX as usize] = sampler;
 
         let mut texture_arena = Self {
-            images,
-            memories,
-            infos: image_infos.to_vec(),
-            views,
+            images: vec![],
+            memories: vec![],
+            infos: vec![],
+            views: vec![],
             samplers,
             descriptor_pool,
             images_set,
@@ -194,14 +154,34 @@ impl TextureArena {
             device: device.clone(),
         };
 
-        texture_arena.device.name_object(
-            texture_arena.images[PREV_FRAME_IMAGE_IDX],
-            "Previous Frame Image",
-        );
-        texture_arena.device.name_object(
-            texture_arena.views[PREV_FRAME_IMAGE_IDX],
-            "Previous Frame Image View",
-        );
+        let image_info = vk::ImageCreateInfo::default()
+            .extent(vk::Extent3D {
+                width: 1,
+                height: 1,
+                depth: 1,
+            })
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_SRGB)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .mip_levels(1)
+            .array_layers(1)
+            .tiling(vk::ImageTiling::OPTIMAL);
+        texture_arena.push_image(queue, image_info, &[255, 255, 0, 255])?;
+
+        let image_infos: [_; 3] = std::array::from_fn(|_| {
+            image_info.extent(vk::Extent3D {
+                width: swapchain.extent.width,
+                height: swapchain.extent.height,
+                depth: 1,
+            })
+        });
+
+        for info in image_infos {
+            let (image, memory) = device.create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let view = device.create_2d_view(&image, info.format)?;
+            texture_arena.push_image_raw(image, view, Some(memory), Some(info));
+        }
 
         let bytes = include_bytes!("../assets/dither.dds");
         let dds = ddsfile::Dds::read(&bytes[..])?;
@@ -219,7 +199,7 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
+        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
         texture_arena
             .device
             .name_object(texture_arena.images[DITHER_IMAGE_IDX], "Dither Image");
@@ -232,7 +212,7 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
+        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
         texture_arena
             .device
             .name_object(texture_arena.images[NOISE_IMAGE_IDX], "Noise Image");
@@ -245,7 +225,7 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        texture_arena.push_image(device, queue, info, dds.get_data(0)?)?;
+        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
         texture_arena
             .device
             .name_object(texture_arena.images[BLUE_IMAGE_IDX], "Blue Noise Image");
@@ -256,23 +236,51 @@ impl TextureArena {
         Ok(texture_arena)
     }
 
+    pub fn push_image_raw(
+        &mut self,
+        image: vk::Image,
+        view: vk::ImageView,
+        memory: Option<MemoryBlock<DeviceMemory>>,
+        info: Option<vk::ImageCreateInfo<'static>>,
+    ) -> u32 {
+        let idx = self.images.len() as u32;
+        self.images.push(image);
+        self.views.push(view);
+        self.memories.push(memory);
+        self.infos.push(info);
+
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_view(view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.images_set)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .dst_binding(IMAGE_SET)
+            .image_info(std::slice::from_ref(&image_info))
+            .dst_array_element(idx);
+        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+
+        idx
+    }
+
     pub fn push_image(
         &mut self,
-        device: &Arc<Device>,
         queue: &vk::Queue,
         info: vk::ImageCreateInfo<'static>,
         data: &[u8],
     ) -> Result<u32> {
-        let (image, memory) = device.create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+        let (image, memory) = self
+            .device
+            .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
 
-        let mut staging = device.create_host_buffer(
+        let mut staging = self.device.create_host_buffer(
             memory.size(),
             vk::BufferUsageFlags::TRANSFER_SRC,
             UsageFlags::UPLOAD,
         )?;
         staging[..data.len()].copy_from_slice(data);
 
-        device.one_time_submit(queue, |device, cbuff| unsafe {
+        self.device.one_time_submit(queue, |device, cbuff| unsafe {
             let mut image_barrier = vk::ImageMemoryBarrier2::default()
                 .subresource_range(COLOR_SUBRESOURCE_MASK)
                 .old_layout(vk::ImageLayout::UNDEFINED)
@@ -312,24 +320,27 @@ impl TextureArena {
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.images_set)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .dst_binding(1)
+            .dst_binding(IMAGE_SET)
             .image_info(std::slice::from_ref(&image_info))
             .dst_array_element(idx);
-        unsafe { device.update_descriptor_sets(&[write], &[]) };
+        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
 
         self.images.push(image);
-        self.infos.push(info);
+        self.infos.push(Some(info));
         self.memories.push(Some(memory));
         self.views.push(view);
 
         Ok(idx)
     }
 
-    pub fn update_images(&mut self, indices: &[usize]) -> Result<()> {
-        for (i, info) in indices.iter().map(|&i| (i, &self.infos[i])) {
+    pub fn update_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
+        for (i, info) in indices
+            .iter()
+            .filter_map(|&i| self.infos[i].map(|info| (i, info)))
+        {
             let (image, memory) = self
                 .device
-                .create_image(info, UsageFlags::FAST_DEVICE_ACCESS)?;
+                .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
             let view = self.device.create_2d_view(&image, info.format)?;
 
             let image_info = vk::DescriptorImageInfo::default()
@@ -338,7 +349,7 @@ impl TextureArena {
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(self.images_set)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .dst_binding(1)
+                .dst_binding(IMAGE_SET)
                 .image_info(std::slice::from_ref(&image_info))
                 .dst_array_element(i as _);
             unsafe { self.device.update_descriptor_sets(&[write], &[]) };
@@ -369,6 +380,7 @@ impl Drop for TextureArena {
 
             self.views
                 .iter()
+                .filter(|view| !view.is_null())
                 .for_each(|&view| self.device.destroy_image_view(view, None));
             self.samplers
                 .iter()

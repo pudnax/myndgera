@@ -56,20 +56,32 @@ pub const COLOR_SUBRESOURCE_MASK: vk::ImageSubresourceRange = vk::ImageSubresour
 
 pub fn align_to<T>(value: T, alignment: T) -> T
 where
-    T: Add<Output = T> + Copy + One + Not<Output = T> + BitAnd<Output = T> + Sub<Output = T>,
+    T: Add<Output = T>
+        + Copy
+        + MissingMath
+        + Not<Output = T>
+        + BitAnd<Output = T>
+        + Sub<Output = T>,
 {
-    (value + alignment - T::one()) & !(alignment - T::one())
+    let mask = alignment.saturating_sub(T::one());
+    (value + mask) & !mask
 }
 
-pub trait One {
+pub trait MissingMath {
     fn one() -> Self;
+    fn saturating_sub(self, other: Self) -> Self;
 }
-macro_rules! impl_one {
+macro_rules! missing_math {
     ( $($t:ty),+) => {
-        $(impl One for $t { fn one() -> $t { 1 } })*
+        $(impl MissingMath for $t {
+            fn one() -> $t { 1 }
+            fn saturating_sub(self, other: $t) -> $t {
+                self.saturating_sub(other)
+            }
+        })*
     }
 }
-impl_one!(i32, u32, i64, u64, usize);
+missing_math!(i32, u32, i64, u64, usize);
 
 pub fn dispatch_optimal(len: u32, subgroup_size: u32) -> u32 {
     let padded_size = (subgroup_size - len % subgroup_size) % subgroup_size;

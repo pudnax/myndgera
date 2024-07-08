@@ -96,12 +96,11 @@ void main() {
 pub const PRELUDE: &str = "const float PI = acos(-1.);
 const float TAU = 2. * PI;
 
-const uint PREV_TEX = 0;
-const uint GENERIC_TEX1 = 1;
-const uint GENERIC_TEX2 = 2;
-const uint DITHER_TEX = 3;
-const uint NOISE_TEX = 4;
-const uint BLUE_TEX = 5;
+const uint GENERIC_TEX1 = 0;
+const uint GENERIC_TEX2 = 1;
+const uint DITHER_TEX = 2;
+const uint NOISE_TEX = 3;
+const uint BLUE_TEX = 4;
 
 const uint LINER_SAMPL = 0;
 const uint NEAREST_SAMPL = 1;
