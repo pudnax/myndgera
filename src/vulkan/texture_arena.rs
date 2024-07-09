@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use anyhow::Result;
 use ash::vk::{self, DeviceMemory, Handle};
-use gpu_alloc::{MemoryBlock, UsageFlags};
+use gpu_alloc::{MapError, MemoryBlock, UsageFlags};
+use gpu_alloc_ash::AshMemoryDevice;
 
-use crate::COLOR_SUBRESOURCE_MASK;
+use crate::align_to;
 
 use super::{Device, Swapchain};
 
@@ -25,6 +26,87 @@ pub const SCREENSIZED_IMAGE_INDICES: [usize; 1] = [PREV_FRAME_IDX];
 const IMAGES_COUNT: u32 = 2048;
 const STORAGE_COUNT: u32 = 2048;
 const SAMPLER_COUNT: u32 = 8;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImageDimensions {
+    pub width: usize,
+    pub height: usize,
+    pub padded_bytes_per_row: usize,
+    pub unpadded_bytes_per_row: usize,
+}
+
+impl ImageDimensions {
+    pub fn new(width: usize, height: usize, alignment: u64) -> Self {
+        let channel_width = std::mem::size_of::<[u8; 4]>();
+        let unpadded_bytes_per_row = width * channel_width;
+        let padded_bytes_per_row = align_to(unpadded_bytes_per_row, alignment as usize);
+        Self {
+            width,
+            height,
+            unpadded_bytes_per_row,
+            padded_bytes_per_row,
+        }
+    }
+}
+
+pub struct ManagedImage {
+    pub image: vk::Image,
+    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
+    pub image_dimensions: ImageDimensions,
+    pub data: Option<&'static mut [u8]>,
+    pub format: vk::Format,
+    device: Arc<Device>,
+}
+
+impl ManagedImage {
+    pub fn new(
+        device: &Arc<Device>,
+        info: &vk::ImageCreateInfo,
+        usage: gpu_alloc::UsageFlags,
+    ) -> anyhow::Result<Self> {
+        let (image, memory) = device.create_image(info, usage)?;
+        let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
+        let image_dimensions = ImageDimensions::new(
+            info.extent.width as _,
+            info.extent.height as _,
+            memory_reqs.alignment,
+        );
+        Ok(Self {
+            image,
+            memory: ManuallyDrop::new(memory),
+            image_dimensions,
+            format: info.format,
+            data: None,
+            device: device.clone(),
+        })
+    }
+
+    pub fn map_memory(&mut self) -> Result<&mut [u8], MapError> {
+        if self.data.is_some() {
+            return Err(MapError::AlreadyMapped);
+        }
+        let size = self.memory.size() as usize;
+        let offset = self.memory.offset();
+        let ptr = unsafe {
+            self.memory
+                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
+        };
+
+        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) };
+        self.data = Some(data);
+
+        Ok(self.data.as_mut().unwrap())
+    }
+}
+
+impl Drop for ManagedImage {
+    fn drop(&mut self) {
+        unsafe {
+            let memory = ManuallyDrop::take(&mut self.memory);
+            self.device.destroy_image(self.image, memory);
+        }
+    }
+}
 
 pub struct TextureArena {
     pub images: Vec<vk::Image>,
@@ -367,14 +449,12 @@ impl TextureArena {
         staging[..data.len()].copy_from_slice(data);
 
         self.device.one_time_submit(queue, |device, cbuff| unsafe {
-            let mut image_barrier = vk::ImageMemoryBarrier2::default()
-                .subresource_range(COLOR_SUBRESOURCE_MASK)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(image);
-            let dependency_info = vk::DependencyInfo::default()
-                .image_memory_barriers(std::slice::from_ref(&image_barrier));
-            device.cmd_pipeline_barrier2(cbuff, &dependency_info);
+            device.image_transition(
+                &cbuff,
+                &image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
             let regions = vk::BufferImageCopy::default()
                 .image_extent(info.extent)
                 .image_subresource(vk::ImageSubresourceLayers {
@@ -390,11 +470,12 @@ impl TextureArena {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[regions],
             );
-            image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-            image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-            let dependency_info = vk::DependencyInfo::default()
-                .image_memory_barriers(std::slice::from_ref(&image_barrier));
-            device.cmd_pipeline_barrier2(cbuff, &dependency_info);
+            device.image_transition(
+                &cbuff,
+                &image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
         })?;
 
         let view = self.device.create_2d_view(&image, info.format)?;
@@ -480,6 +561,10 @@ impl TextureArena {
 impl Drop for TextureArena {
     fn drop(&mut self) {
         unsafe {
+            self.views
+                .iter()
+                .filter(|view| !view.is_null())
+                .for_each(|&view| self.device.destroy_image_view(view, None));
             self.images
                 .iter_mut()
                 .zip(self.memories.iter_mut())
@@ -488,10 +573,6 @@ impl Drop for TextureArena {
                     self.device.destroy_image(*image, memory);
                 });
 
-            self.views
-                .iter()
-                .filter(|view| !view.is_null())
-                .for_each(|&view| self.device.destroy_image_view(view, None));
             self.samplers
                 .iter()
                 .for_each(|&sampler| self.device.destroy_sampler(sampler, None));

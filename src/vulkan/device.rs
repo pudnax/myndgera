@@ -14,7 +14,7 @@ use ash::{
     vk::{self, DeviceMemory, Handle},
 };
 
-use crate::{align_to, ManagedImage, COLOR_SUBRESOURCE_MASK};
+use crate::{align_to, ManagedImage};
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
@@ -62,9 +62,49 @@ impl Device {
         Ok((image, memory))
     }
 
+    pub fn image_transition(
+        &self,
+        command_buffer: &vk::CommandBuffer,
+        image: &vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) {
+        let aspect_mask = if old_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+            || new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+            || new_layout == vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
+        {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        let subresource = vk::ImageSubresourceRange {
+            aspect_mask,
+            base_mip_level: 0,
+            level_count: vk::REMAINING_MIP_LEVELS,
+            base_array_layer: 0,
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+        };
+        let src_stage_mask = get_pipeline_stage_flags(old_layout);
+        let dst_stage_mask = get_pipeline_stage_flags(new_layout);
+        let src_access_mask = get_access_flags(old_layout);
+        let dst_access_mask = get_access_flags(new_layout);
+        let image_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(src_stage_mask)
+            .dst_stage_mask(dst_stage_mask)
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask)
+            .subresource_range(subresource)
+            .image(*image)
+            .old_layout(old_layout)
+            .new_layout(new_layout);
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(std::slice::from_ref(&image_barrier));
+        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) }
+    }
+
     pub fn destroy_image(&self, image: vk::Image, memory: MemoryBlock<DeviceMemory>) {
-        self.dealloc_memory(memory);
         unsafe { self.device.destroy_image(image, None) };
+        self.dealloc_memory(memory);
     }
 
     pub fn create_2d_view(&self, image: &vk::Image, format: vk::Format) -> VkResult<vk::ImageView> {
@@ -162,26 +202,18 @@ impl Device {
         dst_extent: vk::Extent2D,
         dst_orig_layout: vk::ImageLayout,
     ) {
-        let src_barrier = vk::ImageMemoryBarrier2::default()
-            .subresource_range(COLOR_SUBRESOURCE_MASK)
-            .image(*src_image)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-            .old_layout(src_orig_layout)
-            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
-        let dst_barrier = vk::ImageMemoryBarrier2::default()
-            .subresource_range(COLOR_SUBRESOURCE_MASK)
-            .image(*dst_image)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .old_layout(dst_orig_layout)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-        let image_memory_barriers = &[src_barrier, dst_barrier];
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
-        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) };
+        self.image_transition(
+            command_buffer,
+            src_image,
+            src_orig_layout,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+        self.image_transition(
+            command_buffer,
+            dst_image,
+            dst_orig_layout,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        );
 
         let src_offsets = [
             vk::Offset3D { x: 0, y: 0, z: 0 },
@@ -219,21 +251,21 @@ impl Device {
             .filter(vk::Filter::NEAREST);
         unsafe { self.cmd_blit_image2(*command_buffer, &blit_info) };
 
-        let src_barrier = src_barrier
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ)
-            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(src_orig_layout);
-        let dst_barrier = dst_barrier
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(match dst_orig_layout {
+        self.image_transition(
+            command_buffer,
+            src_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            src_orig_layout,
+        );
+        self.image_transition(
+            command_buffer,
+            dst_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            match dst_orig_layout {
                 vk::ImageLayout::UNDEFINED => vk::ImageLayout::GENERAL,
                 _ => dst_orig_layout,
-            });
-        let image_memory_barriers = &[src_barrier, dst_barrier];
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
-        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) };
+            },
+        );
     }
 
     pub fn capture_image_data(
@@ -488,5 +520,55 @@ impl std::fmt::Display for RendererInfo {
         writeln!(f, "Device name: {}", self.device_name)?;
         writeln!(f, "Device type: {}", self.device_type)?;
         Ok(())
+    }
+}
+
+fn get_pipeline_stage_flags(layout: vk::ImageLayout) -> vk::PipelineStageFlags2 {
+    match layout {
+        vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags2::TOP_OF_PIPE,
+        vk::ImageLayout::PREINITIALIZED => vk::PipelineStageFlags2::HOST,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL | vk::ImageLayout::TRANSFER_SRC_OPTIMAL => {
+            vk::PipelineStageFlags2::TRANSFER
+        }
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+        }
+        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL => {
+            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS
+        }
+        vk::ImageLayout::FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR => {
+            vk::PipelineStageFlags2::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
+        }
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
+            vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        }
+        vk::ImageLayout::PRESENT_SRC_KHR => vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+        vk::ImageLayout::GENERAL => vk::PipelineStageFlags2::ALL_COMMANDS,
+        _ => panic!("Unknown layout for pipeline stage: {layout:?}!"),
+    }
+}
+
+fn get_access_flags(layout: vk::ImageLayout) -> vk::AccessFlags2 {
+    match layout {
+        vk::ImageLayout::UNDEFINED | vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
+        vk::ImageLayout::PREINITIALIZED => vk::AccessFlags2::HOST_WRITE,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+        }
+        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL => {
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        }
+        vk::ImageLayout::FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR => {
+            vk::AccessFlags2::FRAGMENT_SHADING_RATE_ATTACHMENT_READ_KHR
+        }
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
+            vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::INPUT_ATTACHMENT_READ
+        }
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+        vk::ImageLayout::GENERAL => vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE,
+        _ => panic!("Unknown layout for access mask: {layout:?}"),
     }
 }

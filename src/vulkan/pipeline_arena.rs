@@ -22,6 +22,13 @@ pub struct ComputePipeline {
     device: Arc<Device>,
 }
 
+impl std::ops::Deref for ComputePipeline {
+    type Target = vk::Pipeline;
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
 impl Drop for ComputePipeline {
     fn drop(&mut self) {
         unsafe {
@@ -164,6 +171,13 @@ pub struct RenderPipeline {
     fragment_shader_lib: vk::Pipeline,
     fragment_output_lib: vk::Pipeline,
     device: Arc<Device>,
+}
+
+impl std::ops::Deref for RenderPipeline {
+    type Target = vk::Pipeline;
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
 }
 
 impl RenderPipeline {

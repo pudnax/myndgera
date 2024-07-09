@@ -61,8 +61,8 @@ impl Frame {
 
 pub struct FrameGuard {
     frame: Frame,
-    extent: vk::Extent2D,
-    image_idx: usize,
+    pub extent: vk::Extent2D,
+    pub image_idx: usize,
     device: Arc<Device>,
 }
 

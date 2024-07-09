@@ -11,10 +11,8 @@ mod watcher;
 use std::{
     fs::File,
     io,
-    mem::ManuallyDrop,
     ops::{Add, BitAnd, Not, Sub},
     path::Path,
-    sync::Arc,
     time::Duration,
 };
 
@@ -27,9 +25,7 @@ pub use self::{
 };
 
 use anyhow::{bail, Context};
-use ash::vk::{self, DeviceMemory};
-use gpu_alloc::{MapError, MemoryBlock};
-use gpu_alloc_ash::AshMemoryDevice;
+use ash::vk::{self};
 
 pub const SHADER_DUMP_FOLDER: &str = "shader_dump";
 pub const SHADER_FOLDER: &str = "shaders";
@@ -46,24 +42,19 @@ pub const COLOR_SUBRESOURCE_MASK: vk::ImageSubresourceRange = vk::ImageSubresour
 
 pub fn align_to<T>(value: T, alignment: T) -> T
 where
-    T: Add<Output = T>
-        + Copy
-        + MissingMath
-        + Not<Output = T>
-        + BitAnd<Output = T>
-        + Sub<Output = T>,
+    T: Add<Output = T> + Copy + IntMath + Not<Output = T> + BitAnd<Output = T> + Sub<Output = T>,
 {
     let mask = alignment.saturating_sub(T::one());
     (value + mask) & !mask
 }
 
-pub trait MissingMath {
+pub trait IntMath {
     fn one() -> Self;
     fn saturating_sub(self, other: Self) -> Self;
 }
 macro_rules! missing_math {
     ( $($t:ty),+) => {
-        $(impl MissingMath for $t {
+        $(impl IntMath for $t {
             fn one() -> $t { 1 }
             fn saturating_sub(self, other: $t) -> $t {
                 self.saturating_sub(other)
@@ -245,87 +236,6 @@ impl From<ShaderKind> for shaderc::ShaderKind {
             ShaderKind::Compute => shaderc::ShaderKind::Compute,
             ShaderKind::Vertex => shaderc::ShaderKind::Vertex,
             ShaderKind::Fragment => shaderc::ShaderKind::Fragment,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ImageDimensions {
-    pub width: usize,
-    pub height: usize,
-    pub padded_bytes_per_row: usize,
-    pub unpadded_bytes_per_row: usize,
-}
-
-impl ImageDimensions {
-    pub fn new(width: usize, height: usize, alignment: u64) -> Self {
-        let channel_width = std::mem::size_of::<[u8; 4]>();
-        let unpadded_bytes_per_row = width * channel_width;
-        let padded_bytes_per_row = align_to(unpadded_bytes_per_row, alignment as usize);
-        Self {
-            width,
-            height,
-            unpadded_bytes_per_row,
-            padded_bytes_per_row,
-        }
-    }
-}
-
-pub struct ManagedImage {
-    pub image: vk::Image,
-    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub image_dimensions: ImageDimensions,
-    pub data: Option<&'static mut [u8]>,
-    pub format: vk::Format,
-    device: Arc<Device>,
-}
-
-impl ManagedImage {
-    pub fn new(
-        device: &Arc<Device>,
-        info: &vk::ImageCreateInfo,
-        usage: gpu_alloc::UsageFlags,
-    ) -> anyhow::Result<Self> {
-        let (image, memory) = device.create_image(info, usage)?;
-        let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
-        let image_dimensions = ImageDimensions::new(
-            info.extent.width as _,
-            info.extent.height as _,
-            memory_reqs.alignment,
-        );
-        Ok(Self {
-            image,
-            memory: ManuallyDrop::new(memory),
-            image_dimensions,
-            format: info.format,
-            data: None,
-            device: device.clone(),
-        })
-    }
-
-    pub fn map_memory(&mut self) -> Result<&mut [u8], MapError> {
-        if self.data.is_some() {
-            return Err(MapError::AlreadyMapped);
-        }
-        let size = self.memory.size() as usize;
-        let offset = self.memory.offset();
-        let ptr = unsafe {
-            self.memory
-                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
-        };
-
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) };
-        self.data = Some(data);
-
-        Ok(self.data.as_mut().unwrap())
-    }
-}
-
-impl Drop for ManagedImage {
-    fn drop(&mut self) {
-        unsafe {
-            let memory = ManuallyDrop::take(&mut self.memory);
-            self.device.destroy_image(self.image, memory);
         }
     }
 }
