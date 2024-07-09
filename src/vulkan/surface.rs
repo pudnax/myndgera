@@ -4,7 +4,7 @@ use anyhow::Result;
 use ash::{khr, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use crate::device::Device;
+use super::device::Device;
 
 pub struct Surface {
     loader: khr::surface::Instance,

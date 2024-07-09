@@ -4,7 +4,9 @@ use anyhow::Result;
 use ash::vk::{self, DeviceMemory, Handle};
 use gpu_alloc::{MemoryBlock, UsageFlags};
 
-use crate::{Device, Swapchain, COLOR_SUBRESOURCE_MASK};
+use crate::COLOR_SUBRESOURCE_MASK;
+
+use super::{Device, Swapchain};
 
 const SAMPLER_SET: u32 = 0;
 const IMAGE_SET: u32 = 1;
@@ -230,7 +232,7 @@ impl TextureArena {
             texture_arena.push_sampled_image(image, view, Some(memory), Some(info));
         }
 
-        let bytes = include_bytes!("../assets/dither.dds");
+        let bytes = include_bytes!("../../assets/dither.dds");
         let dds = ddsfile::Dds::read(&bytes[..])?;
         let mut extent = vk::Extent3D {
             width: dds.get_width(),
@@ -254,7 +256,7 @@ impl TextureArena {
             .device
             .name_object(texture_arena.views[DITHER_IMAGE_IDX], "Dither Image View");
 
-        let bytes = include_bytes!("../assets/noise.dds");
+        let bytes = include_bytes!("../../assets/noise.dds");
         let dds = ddsfile::Dds::read(&bytes[..])?;
         extent.width = dds.get_width();
         extent.height = dds.get_height();
@@ -267,7 +269,7 @@ impl TextureArena {
             .device
             .name_object(texture_arena.views[NOISE_IMAGE_IDX], "Noise Image View");
 
-        let bytes = include_bytes!("../assets/BLUE_RGBA_0.dds");
+        let bytes = include_bytes!("../../assets/BLUE_RGBA_0.dds");
         let dds = ddsfile::Dds::read(&bytes[..])?;
         extent.width = dds.get_width();
         extent.height = dds.get_height();

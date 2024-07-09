@@ -6,7 +6,9 @@ use ash::{
     vk::{self, CompositeAlphaFlagsKHR},
 };
 
-use crate::{device::Device, surface::Surface, ImageDimensions};
+use crate::ImageDimensions;
+
+use super::{device::Device, surface::Surface};
 
 pub struct Frame {
     command_buffer: vk::CommandBuffer,

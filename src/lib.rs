@@ -2,15 +2,11 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod default_shaders;
-mod device;
 mod input;
-mod instance;
 mod pipeline_arena;
 mod recorder;
 mod shader_compiler;
-mod surface;
-mod swapchain;
-mod texture_arena;
+mod vulkan;
 mod watcher;
 
 use std::{
@@ -24,15 +20,11 @@ use std::{
 };
 
 pub use self::{
-    device::{Device, HostBufferTyped},
     input::Input,
-    instance::Instance,
     pipeline_arena::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
-    surface::Surface,
-    swapchain::Swapchain,
-    texture_arena::*,
+    vulkan::*,
     watcher::Watcher,
 };
 

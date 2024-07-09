@@ -1,6 +1,6 @@
 use std::{collections::HashSet, ffi::CStr, sync::Arc};
 
-use crate::{device::Device, surface::Surface};
+use super::{device::Device, surface::Surface};
 
 use anyhow::{Context, Result};
 use ash::{ext, khr, vk, Entry};
