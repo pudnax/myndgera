@@ -3,7 +3,6 @@
 
 pub mod default_shaders;
 mod input;
-mod pipeline_arena;
 mod recorder;
 mod shader_compiler;
 mod vulkan;
@@ -21,7 +20,6 @@ use std::{
 
 pub use self::{
     input::Input,
-    pipeline_arena::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
     vulkan::*,

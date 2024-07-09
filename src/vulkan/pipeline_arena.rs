@@ -12,7 +12,8 @@ use ash::{
     vk::{self},
 };
 
-use crate::{Device, ShaderCompiler, ShaderKind, ShaderSource, Watcher};
+use super::Device;
+use crate::{ShaderCompiler, ShaderKind, ShaderSource, Watcher};
 
 pub struct ComputePipeline {
     pub layout: vk::PipelineLayout,
