@@ -1,4 +1,5 @@
 #version 460
+#extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 
 layout(set = 0, binding = 0) uniform sampler gsamplers[];

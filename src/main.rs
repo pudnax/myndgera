@@ -217,6 +217,10 @@ impl AppInit {
         let extent = self.swapchain.extent();
         self.push_constant.wh = [extent.width as f32, extent.height as f32];
 
+        for (idx, view) in self.swapchain.views.iter().enumerate() {
+            self.texture_arena.update_storage_image(idx as u32, view)
+        }
+
         for i in SCREENSIZED_IMAGE_INDICES {
             if let Some(info) = &mut self.texture_arena.infos[i] {
                 info.extent.width = extent.width;

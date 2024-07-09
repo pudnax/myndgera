@@ -1,13 +1,26 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 // In the beginning, colours never existed. There's nothing that was done before
 // you...
 
 #include <prelude.glsl>
 
+layout(location = 0) in vec2 in_uv;
+layout(location = 0) out vec4 out_color;
+
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
+vec4 Tex(uint tex_id, uint smp_id, vec2 uv) {
+    return texture(
+        nonuniformEXT(sampler2D(gtextures[tex_id], gsamplers[smp_id])), uv);
+}
+vec4 Tex(uint tex_id, uint smp_id) { return Tex(tex_id, smp_id, in_uv); }
+vec4 TexLinear(uint tex_id, vec2 uv) { return Tex(tex_id, LINEAR_SAMPL, uv); }
+vec4 TexLinear(uint tex_id) { return Tex(tex_id, LINEAR_SAMPL, in_uv); }
+vec4 TexNear(uint tex_id, vec2 uv) { return Tex(tex_id, NEAREST_SAMPL, uv); }
+vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
 
 layout(std430, push_constant) uniform PushConstant {
     vec3 pos;
@@ -21,21 +34,11 @@ layout(std430, push_constant) uniform PushConstant {
 }
 pc;
 
-layout(location = 0) in vec2 in_uv;
-layout(location = 0) out vec4 out_color;
-
 void main() {
     vec2 uv = (in_uv + -0.5) * vec2(pc.resolution.x / pc.resolution.y, 1);
 
-    uv *= rotate(pc.time);
-
-    float d = length(uv) - 0.25;
-
     vec3 col = vec3(uv, 1.);
-    col *= d;
-
-    vec4 tex = texture(sampler2D(gtextures[1], gsamplers[0]), in_uv);
-    col *= tex.rgb;
-
+    col *= TexLinear(NOISE_TEX).rgb;
+    col = pow(col, vec3(0.4545));
     out_color = vec4(col, 1.0);
 }

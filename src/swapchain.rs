@@ -105,12 +105,7 @@ impl Swapchain {
         let format = info
             .formats
             .iter()
-            .find(|format| {
-                matches!(
-                    format.format,
-                    vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB
-                )
-            })
+            .find(|format| matches!(format.format, vk::Format::B8G8R8A8_UNORM))
             .unwrap_or(&info.formats[0]);
 
         let image_count = capabilities
@@ -134,6 +129,7 @@ impl Swapchain {
             .image_usage(
                 vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
                     | vk::ImageUsageFlags::TRANSFER_SRC,
             )
             .image_extent(extent)
@@ -213,6 +209,7 @@ impl Swapchain {
             .image_usage(
                 vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
                     | vk::ImageUsageFlags::TRANSFER_SRC,
             )
             .image_extent(self.extent)
