@@ -38,7 +38,8 @@ void main() {
     vec2 uv = (in_uv + -0.5) * vec2(pc.resolution.x / pc.resolution.y, 1);
 
     vec3 col = vec3(uv, 1.);
-    col *= TexLinear(NOISE_TEX).rgb;
+    col *= TexLinear(BLUE_TEX).rgb;
     col = pow(col, vec3(0.4545));
+
     out_color = vec4(col, 1.0);
 }

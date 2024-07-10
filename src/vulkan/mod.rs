@@ -10,6 +10,6 @@ pub use self::{
     instance::Instance,
     pipeline_arena::*,
     surface::Surface,
-    swapchain::Swapchain,
+    swapchain::{Frame, FrameGuard, Swapchain},
     texture_arena::*,
 };

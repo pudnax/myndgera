@@ -1,4 +1,3 @@
-use super::PushConstant;
 use winit::{
     event::{ElementState, KeyEvent, RawKeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -47,25 +46,25 @@ impl Input {
         }
     }
 
-    pub fn process_position(&self, push_constant: &mut PushConstant) {
+    pub fn process_position(&self, pos: &mut [f32; 3]) {
         let dx = 0.01;
         if self.move_left {
-            push_constant.pos[0] -= dx;
+            pos[0] -= dx;
         }
         if self.move_right {
-            push_constant.pos[0] += dx;
+            pos[0] += dx;
         }
         if self.move_backward {
-            push_constant.pos[1] -= dx;
+            pos[1] -= dx;
         }
         if self.move_forward {
-            push_constant.pos[1] += dx;
+            pos[1] += dx;
         }
         if self.move_down {
-            push_constant.pos[2] -= dx;
+            pos[2] -= dx;
         }
         if self.move_up {
-            push_constant.pos[2] += dx;
+            pos[2] += dx;
         }
     }
 }

@@ -498,7 +498,7 @@ impl PipelineArena {
             self.file_watcher.watch_file(&path)?;
             let mut mapping = self.file_watcher.include_mapping.lock();
             mapping
-                .entry(path.clone())
+                .entry(PathBuf::new().join(path.file_name().unwrap()))
                 .or_default()
                 .insert(ShaderSource {
                     path: path.clone(),
@@ -538,7 +538,7 @@ impl PipelineArena {
             self.file_watcher.watch_file(&path)?;
             let mut mapping = self.file_watcher.include_mapping.lock();
             mapping
-                .entry(path.clone())
+                .entry(PathBuf::new().join(path.file_name().unwrap()))
                 .or_default()
                 .insert(ShaderSource { path, kind });
         }

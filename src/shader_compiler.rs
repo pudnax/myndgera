@@ -37,18 +37,12 @@ impl ShaderCompiler {
                             .watcher()
                             .watch(&include_path, notify::RecursiveMode::NonRecursive);
                     }
-                    let source_path = Path::new(SHADER_FOLDER)
-                        .join(source_file)
-                        .canonicalize()
-                        .unwrap();
                     {
                         let mut mapping = watcher_copy.include_mapping.lock();
-                        let sources: Vec<_> = mapping[&source_path].iter().cloned().collect();
+                        let sources: Vec<_> =
+                            mapping[Path::new(source_file)].iter().cloned().collect();
                         for source in sources {
-                            mapping
-                                .entry(include_path.clone())
-                                .or_default()
-                                .insert(source);
+                            mapping.entry(name.into()).or_default().insert(source);
                         }
                     }
                     Ok(shaderc::ResolvedInclude {

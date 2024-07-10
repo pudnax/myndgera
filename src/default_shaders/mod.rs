@@ -16,9 +16,9 @@ pub fn create_default_shaders<P: AsRef<Path>>(name: P) -> std::io::Result<()> {
     };
 
     create_file("prelude.glsl", glsl::PRELUDE)?;
-    create_file("shader.frag", glsl::FRAG_SHADER)?;
-    create_file("shader.vert", glsl::VERT_SHADER)?;
-    create_file("shader.comp", glsl::COMP_SHADER)?;
+    // create_file("shader.frag", glsl::FRAG_SHADER)?;
+    // create_file("shader.vert", glsl::VERT_SHADER)?;
+    // create_file("shader.comp", glsl::COMP_SHADER)?;
 
     Ok(())
 }
