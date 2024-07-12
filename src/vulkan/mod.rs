@@ -6,7 +6,7 @@ mod swapchain;
 mod texture_arena;
 
 pub use self::{
-    device::{Device, HostBufferTyped},
+    device::{BufferTyped, Device},
     instance::Instance,
     pipeline_arena::*,
     surface::Surface,

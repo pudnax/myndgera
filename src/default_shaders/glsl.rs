@@ -1,4 +1,4 @@
-pub const FRAG_SHADER: &str = "#version 460
+pub const _FRAG_SHADER: &str = "#version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
 
@@ -40,7 +40,7 @@ void main() {
     out_color = vec4(col, 1.0);
 }";
 
-pub const VERT_SHADER: &str = "#version 460
+pub const _VERT_SHADER: &str = "#version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
 
@@ -66,7 +66,7 @@ void main() {
     gl_Position = vec4(out_uv * 2.0f + -1.0f, 0.0, 1.0);
 }";
 
-pub const COMP_SHADER: &str = "#version 460
+pub const _COMP_SHADER: &str = "#version 460
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 

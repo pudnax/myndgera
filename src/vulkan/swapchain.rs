@@ -255,6 +255,7 @@ impl Swapchain {
     pub fn acquire_next_image(&mut self) -> VkResult<FrameGuard> {
         self.frames.retain_mut(|frame| {
             let status = unsafe { self.device.get_fence_status(frame.present_finished) };
+            // Frame finished execution
             if status == Ok(true) {
                 frame.destroy(&self.command_pool);
                 false

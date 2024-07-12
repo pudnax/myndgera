@@ -1,5 +1,5 @@
 use anyhow::Result;
-use gpu_alloc::{GpuAllocator, MemoryBlock, Request, UsageFlags};
+use gpu_alloc::{GpuAllocator, MapError, MemoryBlock, Request, UsageFlags};
 use gpu_alloc_ash::AshMemoryDevice;
 use parking_lot::Mutex;
 use std::{
@@ -129,10 +129,10 @@ impl Device {
     }
 
     pub fn one_time_submit(
-        &self,
+        self: &Arc<Self>,
         queue: &vk::Queue,
-        callbk: impl FnOnce(&Self, vk::CommandBuffer),
-    ) -> VkResult<()> {
+        callbk: impl FnOnce(&Arc<Self>, vk::CommandBuffer) -> anyhow::Result<()>,
+    ) -> Result<()> {
         let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
         let command_buffer = unsafe {
             self.allocate_command_buffers(
@@ -150,7 +150,7 @@ impl Device {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            callbk(self, command_buffer);
+            callbk(self, command_buffer)?;
 
             self.end_command_buffer(command_buffer)?;
 
@@ -303,6 +303,7 @@ impl Device {
                 extent,
                 vk::ImageLayout::UNDEFINED,
             );
+            Ok(())
         })?;
 
         callback(dst_image);
@@ -310,14 +311,14 @@ impl Device {
         Ok(())
     }
 
-    pub fn create_host_buffer(
+    pub fn create_buffer(
         self: &Arc<Self>,
         size: u64,
         usage: vk::BufferUsageFlags,
         memory_usage: gpu_alloc::UsageFlags,
-    ) -> Result<HostBuffer> {
+    ) -> Result<Buffer> {
         let buffer = unsafe {
-            self.create_buffer(
+            self.device.create_buffer(
                 &vk::BufferCreateInfo::default()
                     .size(size)
                     .usage(usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS),
@@ -326,38 +327,28 @@ impl Device {
         };
         let mem_requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
 
-        let mut memory =
-            self.alloc_memory(mem_requirements, memory_usage | UsageFlags::HOST_ACCESS)?;
+        let memory = self.alloc_memory(mem_requirements, memory_usage)?;
         unsafe { self.bind_buffer_memory(buffer, *memory.memory(), memory.offset()) }?;
 
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
 
-        let ptr = unsafe {
-            memory.map(
-                AshMemoryDevice::wrap(self),
-                memory.offset(),
-                memory.size() as usize,
-            )?
-        };
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr(), size as _) };
-
-        Ok(HostBuffer {
+        Ok(Buffer {
             address,
             size,
             buffer,
             memory: ManuallyDrop::new(memory),
-            data,
+            data: None,
             device: self.clone(),
         })
     }
 
-    pub fn create_host_buffer_typed<T>(
-        self: Arc<Self>,
+    pub fn create_buffer_typed<T>(
+        self: &Arc<Self>,
         usage: vk::BufferUsageFlags,
         memory_usage: gpu_alloc::UsageFlags,
-    ) -> Result<HostBufferTyped<T>> {
+    ) -> Result<BufferTyped<T>> {
         let byte_size = (size_of::<T>()) as vk::DeviceSize;
         let buffer = unsafe {
             self.device.create_buffer(
@@ -369,8 +360,7 @@ impl Device {
         };
         let mem_requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
 
-        let mut memory =
-            self.alloc_memory(mem_requirements, memory_usage | UsageFlags::HOST_ACCESS)?;
+        let memory = self.alloc_memory(mem_requirements, memory_usage)?;
         unsafe { self.bind_buffer_memory(buffer, *memory.memory(), memory.offset()) }?;
 
         let address = unsafe {
@@ -378,23 +368,14 @@ impl Device {
         };
         self.name_object(
             buffer,
-            &format!("HostBuffer<{}>", pretty_type_name::pretty_type_name::<T>()),
+            &format!("BufferTyped<{}>", pretty_type_name::pretty_type_name::<T>()),
         );
 
-        let ptr = unsafe {
-            memory.map(
-                AshMemoryDevice::wrap(&self.device),
-                memory.offset(),
-                memory.size() as usize,
-            )?
-        };
-        let data = unsafe { &mut *ptr.as_ptr().cast::<T>() };
-
-        Ok(HostBufferTyped {
+        Ok(BufferTyped {
             address,
             buffer,
             memory: ManuallyDrop::new(memory),
-            data,
+            data: None,
             device: self.clone(),
         })
     }
@@ -444,29 +425,35 @@ impl Drop for Device {
     }
 }
 
-pub struct HostBuffer {
+pub struct Buffer {
     pub address: u64,
     pub size: u64,
     pub buffer: vk::Buffer,
     pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub data: &'static mut [u8],
+    pub data: Option<&'static mut [u8]>,
     device: Arc<Device>,
 }
 
-impl std::ops::Deref for HostBuffer {
-    type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        self.data
+impl Buffer {
+    pub fn map_memory(&mut self) -> Result<&mut [u8], MapError> {
+        if self.data.is_some() {
+            return Ok(self.data.as_mut().unwrap());
+        }
+        let size = self.memory.size() as usize;
+        let offset = self.memory.offset();
+        let ptr = unsafe {
+            self.memory
+                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
+        };
+
+        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) };
+        self.data = Some(data);
+
+        Ok(self.data.as_mut().unwrap())
     }
 }
 
-impl std::ops::DerefMut for HostBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data
-    }
-}
-
-impl Drop for HostBuffer {
+impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_buffer(self.buffer, None);
@@ -476,28 +463,33 @@ impl Drop for HostBuffer {
     }
 }
 
-pub struct HostBufferTyped<T: 'static> {
+pub struct BufferTyped<T: 'static> {
     pub address: u64,
     pub buffer: vk::Buffer,
     pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub data: &'static mut T,
+    pub data: Option<&'static mut T>,
     device: Arc<Device>,
 }
 
-impl<T> std::ops::Deref for HostBufferTyped<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.data
+impl<T: bytemuck::NoUninit + bytemuck::AnyBitPattern> BufferTyped<T> {
+    pub fn map_memory(&mut self) -> Result<&mut T, MapError> {
+        if self.data.is_some() {
+            return Ok(self.data.as_mut().unwrap());
+        }
+        let size = self.memory.size() as usize;
+        let offset = self.memory.offset();
+        let ptr = unsafe {
+            self.memory
+                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
+        };
+
+        self.data = Some(unsafe { &mut *ptr.as_ptr().cast() });
+
+        Ok(self.data.as_mut().unwrap())
     }
 }
 
-impl<T> std::ops::DerefMut for HostBufferTyped<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data
-    }
-}
-
-impl<T> Drop for HostBufferTyped<T> {
+impl<T> Drop for BufferTyped<T> {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_buffer(self.buffer, None);

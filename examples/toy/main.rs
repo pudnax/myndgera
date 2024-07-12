@@ -13,7 +13,7 @@ impl Example for Toy {
     fn name() -> &'static str {
         "Toy"
     }
-    fn init(ctx: &mut RenderContext) -> Result<Self> {
+    fn init(ctx: RenderContext) -> Result<Self> {
         let vertex_shader_desc = VertexShaderDesc {
             shader_path: "examples/toy/shader.vert".into(),
             ..Default::default()
@@ -52,7 +52,7 @@ impl Example for Toy {
         })
     }
 
-    fn render(&mut self, ctx: &mut RenderContext, frame: &mut FrameGuard) -> Result<()> {
+    fn render(&mut self, ctx: RenderContext, frame: &mut FrameGuard) -> Result<()> {
         let stages = vk::ShaderStageFlags::VERTEX
             | vk::ShaderStageFlags::FRAGMENT
             | vk::ShaderStageFlags::COMPUTE;

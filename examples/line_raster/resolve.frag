@@ -22,25 +22,30 @@ vec4 TexLinear(uint tex_id) { return Tex(tex_id, LINEAR_SAMPL, in_uv); }
 vec4 TexNear(uint tex_id, vec2 uv) { return Tex(tex_id, NEAREST_SAMPL, uv); }
 vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
 
+layout(set = 1, binding = 0,
+       r32ui) uniform readonly uimage2D gstorage_textures[];
+
 layout(std430, push_constant) uniform PushConstant {
-    vec3 pos;
-    float time;
-    vec2 resolution;
-    vec2 mouse;
-    bool mouse_pressed;
-    uint frame;
-    float time_delta;
-    float record_time;
+    uint idx;
+    uint red_img;
+    uint green_img;
+    uint blue_img;
 }
 pc;
 
 void main() {
-    vec2 uv = (in_uv + -0.5) * vec2(pc.resolution.x / pc.resolution.y, 1);
+    vec2 dims = vec2(imageSize(gstorage_textures[pc.red_img]));
+    vec2 uv = (in_uv + -0.5) * vec2(dims.x / dims.y, 1);
 
-    vec3 col = vec3(uv, 1.);
-    float d = length(uv - pc.pos.xy) - 0.25;
-    col = mix(col, vec3(0.25), step(d, 0.));
-    col *= TexLinear(BLUE_TEX).rgb;
+    vec3 col = vec3(.1);
+
+    vec2 u = in_uv + vec2(0., -1.);
+    u.y *= -1.;
+    ivec2 pix = ivec2(u * dims);
+    col.r += imageLoad(gstorage_textures[pc.red_img], pix).x / 255.;
+    col.g += imageLoad(gstorage_textures[pc.green_img], pix).x / 255.;
+    col.b += imageLoad(gstorage_textures[pc.blue_img], pix).x / 255.;
+
     col = pow(col, vec3(0.4545));
 
     out_color = vec4(col, 1.0);

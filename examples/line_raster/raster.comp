@@ -3,28 +3,89 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-layout(set = 0, binding = 0, rgba8) writeonly uniform image2D gtextures[];
-
 layout(std430, buffer_reference,
-       buffer_reference_align = 8) readonly buffer Transform {
-    mat2 transform;
+       buffer_reference_align = 16) readonly buffer Camera {
+    vec4 pos;
+    mat4 world_to_clip;
+    mat4 clip_to_world;
 };
 
+layout(set = 0, binding = 0, r32ui) uniform coherent
+    restrict uimage2D gtextures[];
+
 layout(std430, push_constant) uniform PushConstant {
-    uint idx;
-    Transform trans;
+    uint red_img;
+    uint green_img;
+    uint blue_img;
+    Camera camera;
 }
 pc;
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+vec2 project(vec3 pos) {
+    vec4 screen_pos = pc.camera.world_to_clip * vec4(pos, 1.0);
+    screen_pos.x = (screen_pos.x / screen_pos.w);
+    screen_pos.y = (screen_pos.y / screen_pos.w);
+
+    return screen_pos.xy;
+}
+
+bool in_bounds(vec2 pos, vec2 dims) {
+    return all(greaterThanEqual(pos, ivec2(0))) && all(lessThan(pos, dims));
+}
+
+vec2 get_uv_comp(uvec3 global_id, vec2 tex_size) {
+    return (vec2(global_id) + 0.5) / vec2(tex_size);
+}
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
-    uint idx = (pc.idx + 0) % 3;
-    vec2 dims = imageSize(gtextures[idx]);
-    vec2 pix = gl_GlobalInvocationID.xy;
-    if (pix.x >= dims.x || pix.y >= dims.y) {
-        return;
+    uvec2 dims = imageSize(gtextures[pc.red_img]);
+
+    vec2 uv = get_uv_comp(gl_GlobalInvocationID, dims);
+
+    vec3 gray_start = vec3(0.75);
+    vec3 gray_end = vec3(0.25);
+
+    vec2 ray_start = project(gray_start) * dims;
+    vec2 ray_end = project(gray_end) * dims;
+
+    vec2 ray_dir = ray_end - ray_start;
+    float ray_len_squared = dot(ray_dir, ray_dir);
+    ray_dir /= sqrt(ray_len_squared);
+
+    ivec2 map_pos = ivec2(floor(ray_start + 0.));
+
+    vec2 delta_dist = 1.0 / abs(ray_dir);
+    ivec2 ray_step = ivec2(sign(ray_dir));
+    vec2 side_dist = (sign(ray_dir) * (vec2(map_pos) - ray_start) +
+                      (sign(ray_dir) * 0.5) + 0.5) *
+                     delta_dist;
+
+    for (int i = 0; i < 2500; i++) {
+        if (!in_bounds(map_pos, dims)) { continue; }
+        vec2 len = ray_start - map_pos;
+        if (dot(len, len) > ray_len_squared) { break; }
+
+        bvec2 mask = lessThanEqual(side_dist.xy, side_dist.yx);
+        side_dist += vec2(mask) * delta_dist;
+        map_pos += ivec2(vec2(mask)) * ray_step;
+
+        imageAtomicAdd(gtextures[pc.red_img], map_pos.xy, 200u);
+        imageAtomicAdd(gtextures[pc.green_img], map_pos.xy, 10u);
+        imageAtomicAdd(gtextures[pc.blue_img], map_pos.xy, 25u);
     }
 
-    imageStore(gtextures[idx], ivec2(pix), vec4(1., 0., 1., 1.));
+    // float n = 52.;
+    // for (float i = 0.; i < n; ++i) {
+    //     vec2 p = start + dir * (i / n) * rlength;
+    //     p = p - uv;
+    //     ivec2 pix = ivec2(dims * p + 0.);
+    //     if ((pix.x >= 0 && pix.y >= 0) && (pix.x < dims.x && pix.y < dims.y))
+    //     {
+    //         imageAtomicAdd(gtextures[pc.red_img], pix, 25u);
+    //         imageAtomicAdd(gtextures[pc.green_img], pix, 10u);
+    //         imageAtomicAdd(gtextures[pc.blue_img], pix, 25u);
+    //     }
+    // }
 }

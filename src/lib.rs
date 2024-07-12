@@ -1,6 +1,7 @@
 #![allow(clippy::new_without_default)]
 #![allow(clippy::too_many_arguments)]
 
+mod camera;
 pub mod default_shaders;
 mod input;
 mod recorder;
@@ -9,7 +10,10 @@ mod utils;
 mod vulkan;
 mod watcher;
 
+use dolly::drivers::YawPitch;
 use either::Either;
+use glam::{vec2, vec3, Vec3};
+use gpu_alloc::UsageFlags;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -25,6 +29,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+use self::camera::{Camera, CameraUniform};
 pub use self::{
     input::Input,
     recorder::{RecordEvent, Recorder},
@@ -56,6 +61,8 @@ pub const COLOR_SUBRESOURCE_MASK: vk::ImageSubresourceRange = vk::ImageSubresour
 };
 
 pub struct RenderContext<'a> {
+    pub camera: &'a mut Camera,
+    pub camera_uniform: &'a mut BufferTyped<CameraUniform>,
     pub window: &'a mut Window,
     pub device: &'a Device,
     pub swapchain: &'a mut Swapchain,
@@ -70,14 +77,14 @@ pub trait Example: 'static + Sized {
     fn name() -> &'static str {
         "Myndgera"
     }
-    fn init(ctx: &mut RenderContext) -> Result<Self>;
-    fn resize(&mut self, _ctx: &mut RenderContext) -> Result<()> {
+    fn init(ctx: RenderContext) -> Result<Self>;
+    fn resize(&mut self, _ctx: RenderContext) -> Result<()> {
         Ok(())
     }
-    fn update(&mut self, _ctx: &mut RenderContext) -> Result<()> {
+    fn update(&mut self, _ctx: RenderContext) -> Result<()> {
         Ok(())
     }
-    fn render(&mut self, _ctx: &mut RenderContext, _frame: &mut FrameGuard) -> Result<()> {
+    fn render(&mut self, _ctx: RenderContext, _frame: &mut FrameGuard) -> Result<()> {
         Ok(())
     }
     fn input(&mut self, _key_event: &KeyEvent) {}
@@ -88,6 +95,8 @@ struct AppInit<E> {
     example: E,
     window: Window,
     input: Input,
+    camera: Camera,
+    camera_uniform: BufferTyped<CameraUniform>,
 
     pause: bool,
     timeline: Instant,
@@ -144,8 +153,15 @@ impl<E: Example> AppInit<E> {
         };
 
         let mut texture_arena = TextureArena::new(&device, &swapchain, &queue)?;
+        let mut camera = Camera::new(vec3(0., 0., 0.), 0., 0.);
+        let mut camera_uniform = device.create_buffer_typed(
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
+            UsageFlags::FAST_DEVICE_ACCESS,
+        )?;
 
-        let mut ctx = RenderContext {
+        let ctx = RenderContext {
+            camera: &mut camera,
+            camera_uniform: &mut camera_uniform,
             window: &mut window,
             device: &device,
             swapchain: &mut swapchain,
@@ -155,7 +171,7 @@ impl<E: Example> AppInit<E> {
             transfer_queue: &transfer_queue,
             stats: &mut stats,
         };
-        let example = E::init(&mut ctx)?;
+        let example = E::init(ctx)?;
 
         if record_time.is_some() {
             let mut image_dimensions = swapchain.image_dimensions;
@@ -168,6 +184,8 @@ impl<E: Example> AppInit<E> {
             example,
             window,
             input: Input::default(),
+            camera,
+            camera_uniform,
 
             pause: false,
             timeline: Instant::now(),
@@ -195,22 +213,69 @@ impl<E: Example> AppInit<E> {
         })
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> Result<()> {
         self.input.process_position(&mut self.stats.pos);
-        let mut ctx = RenderContext {
+
+        if self.input.mouse_state.left_held() {
+            let sensitivity = 0.5;
+            self.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
+                -sensitivity * self.input.mouse_state.delta.x,
+                sensitivity * self.input.mouse_state.delta.y,
+            );
+        }
+
+        let dt = self.stats.time_delta;
+        let move_right = self.input.move_right - self.input.move_left;
+        let move_up = self.input.move_up - self.input.move_down;
+        let move_fwd = self.input.move_backward - self.input.move_forward;
+
+        let rotation: glam::Quat = self.camera.rig.final_transform.rotation.into();
+        let move_vec = rotation
+            * Vec3::new(move_right, move_up, move_fwd).clamp_length_max(1.0)
+            * 4.0f32.powf(self.input.boost);
+
+        self.camera
+            .rig
+            .driver_mut::<dolly::drivers::Position>()
+            .translate(move_vec * dt as f32 * 5.0);
+
+        self.camera.rig.update(dt as _);
+
+        self.camera.position = self.camera.rig.final_transform.position.into();
+        self.camera.rotation = self.camera.rig.final_transform.rotation.into();
+
+        let mut staging = self.device.create_buffer_typed::<CameraUniform>(
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            UsageFlags::UPLOAD,
+        )?;
+        let mapped = staging.map_memory()?;
+        *mapped = self.camera.get_uniform();
+
+        self.device.one_time_submit(&self.queue, |device, cbuff| {
+            let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
+            let copy_info = vk::CopyBufferInfo2::default()
+                .src_buffer(staging.buffer)
+                .dst_buffer(self.camera_uniform.buffer)
+                .regions(std::slice::from_ref(&region));
+            unsafe { device.cmd_copy_buffer2(cbuff, &copy_info) };
+            Ok(())
+        })?;
+
+        let ctx = RenderContext {
+            camera: &mut self.camera,
+            camera_uniform: &mut self.camera_uniform,
             window: &mut self.window,
+            device: &mut self.device,
             swapchain: &mut self.swapchain,
-            device: &self.device,
             texture_arena: &mut self.texture_arena,
             pipeline_arena: &mut self.pipeline_arena,
             queue: &mut self.queue,
             transfer_queue: &mut self.transfer_queue,
             stats: &mut self.stats,
         };
-        let _ = self
-            .example
-            .update(&mut ctx)
-            .map_err(|err| log::error!("{err}"));
+        self.example.update(ctx)?;
+
+        Ok(())
     }
 
     fn reload_shaders(&mut self, path: PathBuf) -> Result<()> {
@@ -261,6 +326,7 @@ impl<E: Example> AppInit<E> {
             .expect("Failed to recreate swapchain");
         let extent = self.swapchain.extent();
         self.stats.wh = [extent.width as f32, extent.height as f32];
+        self.camera.aspect = extent.width as f32 / extent.height as f32;
 
         for (idx, view) in self.swapchain.views.iter().enumerate() {
             self.texture_arena.update_storage_image(idx as u32, view)
@@ -273,9 +339,11 @@ impl<E: Example> AppInit<E> {
             }
         }
         self.texture_arena
-            .update_images_by_idx(&SCREENSIZED_IMAGE_INDICES)?;
+            .update_sampled_images_by_idx(&SCREENSIZED_IMAGE_INDICES)?;
 
-        let mut ctx = RenderContext {
+        let ctx = RenderContext {
+            camera: &mut self.camera,
+            camera_uniform: &mut self.camera_uniform,
             window: &mut self.window,
             device: &mut self.device,
             swapchain: &mut self.swapchain,
@@ -285,7 +353,7 @@ impl<E: Example> AppInit<E> {
             transfer_queue: &mut self.transfer_queue,
             stats: &mut self.stats,
         };
-        self.example.resize(&mut ctx)?;
+        self.example.resize(ctx)?;
 
         Ok(())
     }
@@ -313,7 +381,8 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
 
             self.frame_accumulated_time += frame_time;
             while self.frame_accumulated_time >= FIXED_TIME_STEP {
-                self.update();
+                let _ = self.update().map_err(|err| log::error!("{err}"));
+                self.input.mouse_state.refresh();
 
                 self.frame_accumulated_time -= FIXED_TIME_STEP;
             }
@@ -333,9 +402,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
         _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
-        if let winit::event::DeviceEvent::Key(key_event) = event {
-            self.input.update_device_input(key_event);
-        }
+        self.input.update_device_input(event);
     }
 
     fn window_event(
@@ -450,6 +517,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     let x = (x as f32 / width as f32 - 0.5) * 2.;
                     let y = -(y as f32 / height as f32 - 0.5) * 2.;
                     self.stats.mouse = [x, y];
+                    self.input.mouse_state.screen_position = vec2(x, y);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -464,7 +532,9 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                 };
 
                 {
-                    let mut ctx = RenderContext {
+                    let ctx = RenderContext {
+                        camera: &mut self.camera,
+                        camera_uniform: &mut self.camera_uniform,
                         window: &mut self.window,
                         swapchain: &mut self.swapchain,
                         device: &mut self.device,
@@ -476,7 +546,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     };
                     let _ = self
                         .example
-                        .render(&mut ctx, &mut frame)
+                        .render(ctx, &mut frame)
                         .map_err(|err| log::error!("{err}"));
                 }
 

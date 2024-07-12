@@ -118,10 +118,11 @@ pub struct TextureArena {
 
     pub storage_images: Vec<vk::Image>,
     pub storage_memory: Vec<Option<MemoryBlock<DeviceMemory>>>,
-    pub storage_info: Vec<Option<vk::ImageCreateInfo<'static>>>,
+    pub storage_infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
     pub storage_views: Vec<vk::ImageView>,
     pub storage_set: vk::DescriptorSet,
     pub storage_set_layout: vk::DescriptorSetLayout,
+    pub swapchain_img_idx: Vec<u32>,
 
     pub samplers: [vk::Sampler; SAMPLER_COUNT as usize],
 
@@ -159,6 +160,7 @@ impl TextureArena {
             )?
         };
 
+        // Sampled textures
         let binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND;
         let binding_flags = [
             binding_flags,
@@ -202,6 +204,7 @@ impl TextureArena {
             .push_next(&mut variable_info);
         let images_set = unsafe { device.allocate_descriptor_sets(&allocate_info)? }[0];
 
+        // Storage textures
         let binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND
             | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
             | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
@@ -279,9 +282,10 @@ impl TextureArena {
             storage_images: vec![],
             storage_views: vec![],
             storage_memory: vec![],
-            storage_info: vec![],
+            storage_infos: vec![],
             storage_set,
             storage_set_layout,
+            swapchain_img_idx: vec![],
             device: device.clone(),
         };
 
@@ -365,7 +369,8 @@ impl TextureArena {
             .name_object(texture_arena.views[BLUE_IMAGE_IDX], "Blue Noise Image View");
 
         for (image, view) in swapchain.images.iter().zip(&swapchain.views) {
-            texture_arena.push_storage_image(*image, *view, None, None);
+            let idx = texture_arena.push_storage_image(*image, *view, None, None);
+            texture_arena.swapchain_img_idx.push(idx);
         }
 
         Ok(texture_arena)
@@ -415,7 +420,7 @@ impl TextureArena {
         self.storage_images.push(image);
         self.storage_views.push(view);
         self.storage_memory.push(memory);
-        self.storage_info.push(info);
+        self.storage_infos.push(info);
 
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(view)
@@ -441,12 +446,13 @@ impl TextureArena {
             .device
             .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
 
-        let mut staging = self.device.create_host_buffer(
+        let mut staging = self.device.create_buffer(
             memory.size(),
             vk::BufferUsageFlags::TRANSFER_SRC,
             UsageFlags::UPLOAD,
         )?;
-        staging[..data.len()].copy_from_slice(data);
+        let mapped = staging.map_memory()?;
+        mapped[..data.len()].copy_from_slice(data);
 
         self.device.one_time_submit(queue, |device, cbuff| unsafe {
             device.image_transition(
@@ -476,6 +482,7 @@ impl TextureArena {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             );
+            Ok(())
         })?;
 
         let view = self.device.create_2d_view(&image, info.format)?;
@@ -499,7 +506,7 @@ impl TextureArena {
 
         Ok(idx)
     }
-    pub fn update_sampled_image(&mut self, idx: u32, view: &vk::ImageView) {
+    pub fn update_sampled_image(&self, idx: u32, view: &vk::ImageView) {
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(*view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
@@ -511,7 +518,7 @@ impl TextureArena {
             .dst_array_element(idx);
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
     }
-    pub fn update_storage_image(&mut self, idx: u32, view: &vk::ImageView) {
+    pub fn update_storage_image(&self, idx: u32, view: &vk::ImageView) {
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(*view)
             .image_layout(vk::ImageLayout::GENERAL);
@@ -524,7 +531,7 @@ impl TextureArena {
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
     }
 
-    pub fn update_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
+    pub fn update_sampled_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
         for (i, info) in indices
             .iter()
             .filter_map(|&i| self.infos[i].map(|info| (i, info)))
@@ -534,16 +541,7 @@ impl TextureArena {
                 .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
             let view = self.device.create_2d_view(&image, info.format)?;
 
-            let image_info = vk::DescriptorImageInfo::default()
-                .image_view(view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(self.images_set)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .dst_binding(IMAGE_SET)
-                .image_info(std::slice::from_ref(&image_info))
-                .dst_array_element(i as _);
-            unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            self.update_sampled_image(i as u32, &view);
 
             if let Some(old_memory) = self.memories[i].take() {
                 self.device.destroy_image(self.images[i], old_memory);
@@ -552,6 +550,31 @@ impl TextureArena {
             self.images[i] = image;
             self.memories[i] = Some(memory);
             self.views[i] = view;
+        }
+
+        Ok(())
+    }
+
+    pub fn update_storage_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
+        for (i, info) in indices
+            .iter()
+            .filter_map(|&i| self.storage_infos[i].map(|info| (i, info)))
+        {
+            let (image, memory) = self
+                .device
+                .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let view = self.device.create_2d_view(&image, info.format)?;
+
+            self.update_storage_image(i as u32, &view);
+
+            if let Some(old_memory) = self.storage_memory[i].take() {
+                self.device
+                    .destroy_image(self.storage_images[i], old_memory);
+            }
+            unsafe { self.device.destroy_image_view(self.storage_views[i], None) };
+            self.storage_images[i] = image;
+            self.storage_memory[i] = Some(memory);
+            self.storage_views[i] = view;
         }
 
         Ok(())
@@ -568,6 +591,19 @@ impl Drop for TextureArena {
             self.images
                 .iter_mut()
                 .zip(self.memories.iter_mut())
+                .filter_map(|(img, mem)| mem.take().map(|mem| (img, mem)))
+                .for_each(|(image, memory)| {
+                    self.device.destroy_image(*image, memory);
+                });
+
+            self.storage_views
+                .iter()
+                .skip(self.swapchain_img_idx.len())
+                .filter(|view| !view.is_null())
+                .for_each(|&view| self.device.destroy_image_view(view, None));
+            self.storage_images
+                .iter_mut()
+                .zip(self.storage_memory.iter_mut())
                 .filter_map(|(img, mem)| mem.take().map(|mem| (img, mem)))
                 .for_each(|(image, memory)| {
                     self.device.destroy_image(*image, memory);

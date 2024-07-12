@@ -17,7 +17,9 @@ impl ShaderCompiler {
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_3 as u32,
         );
-        options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+        if !cfg!(debug_assertions) {
+            options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+        }
         options.set_target_spirv(shaderc::SpirvVersion::V1_6);
         options.set_generate_debug_info();
 
