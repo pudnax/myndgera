@@ -1,0 +1,30 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+
+struct Line {
+    vec4 start;
+    vec4 end;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 16) buffer Lines {
+    Line lines[];
+};
+
+layout(std430, push_constant) uniform PushConstant { Lines lines_ptr; }
+pc;
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    if (gl_GlobalInvocationID.x > 50) { return; }
+
+    for (int i = 0; i < 50; ++i) {
+        float x = float(i) - 25.;
+        float y = 1. * (mod(i, 2) - .5);
+        float z = 1.;
+        Line line = Line(vec4(x, y, z, 0.), vec4(x, -y, -z, 1.));
+        pc.lines_ptr.lines[i] = line;
+    }
+}

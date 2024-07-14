@@ -1,7 +1,21 @@
 use anyhow::{Ok, Result};
 use ash::vk;
+use glam::Vec4;
 use gpu_alloc::UsageFlags;
 use myndgera::*;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct Line {
+    start: Vec4,
+    end: Vec4,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct SpawnPC {
+    line_buffer: u64,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -10,6 +24,7 @@ struct RasterPC {
     green_image: u32,
     blue_image: u32,
     camera_buffer: u64,
+    line_buffer: u64,
 }
 
 #[repr(C)]
@@ -21,7 +36,11 @@ struct ResolvePC {
     bluew_image: u32,
 }
 
+const NUM_LINES: u32 = 50;
+
 struct LineRaster {
+    spawn_pass: ComputeHandle,
+    lines_buffer: Buffer,
     fill_pass: ComputeHandle,
     raster_pass: ComputeHandle,
     resolve_pass: RenderHandle,
@@ -33,6 +52,21 @@ impl Example for LineRaster {
         "Line Rasteriazation"
     }
     fn init(ctx: RenderContext) -> Result<Self> {
+        let push_constant_range = vk::PushConstantRange::default()
+            .size(size_of::<SpawnPC>() as _)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE);
+        let spawn_pass = ctx.pipeline_arena.create_compute_pipeline(
+            "examples/line_raster/spawn.comp",
+            &[push_constant_range],
+            &[],
+        )?;
+        let size = std::mem::size_of::<Line>() * NUM_LINES as usize;
+        let lines_buffer = ctx.device.create_buffer(
+            size as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            UsageFlags::FAST_DEVICE_ACCESS,
+        )?;
+
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
@@ -106,10 +140,38 @@ impl Example for LineRaster {
         }
 
         Ok(Self {
+            spawn_pass,
+            lines_buffer,
             fill_pass,
             raster_pass,
             resolve_pass,
             accumulate_images,
+        })
+    }
+
+    fn update(&mut self, ctx: RenderContext) -> Result<()> {
+        let pipeline = ctx.pipeline_arena.get_pipeline(self.spawn_pass);
+        let spawn_push_constant = SpawnPC {
+            line_buffer: self.lines_buffer.address,
+        };
+        ctx.device.one_time_submit(ctx.queue, |device, cbuff| {
+            unsafe {
+                let ptr = core::ptr::from_ref(&spawn_push_constant);
+                let bytes = core::slice::from_raw_parts(
+                    ptr.cast(),
+                    std::mem::size_of_val(&spawn_push_constant),
+                );
+                device.cmd_push_constants(
+                    cbuff,
+                    pipeline.layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    bytes,
+                );
+                device.cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
+                device.cmd_dispatch(cbuff, NUM_LINES, 1, 1);
+            }
+            Ok(())
         })
     }
 
@@ -134,6 +196,7 @@ impl Example for LineRaster {
             green_image: self.accumulate_images[1] as u32,
             blue_image: self.accumulate_images[2] as u32,
             camera_buffer: ctx.camera_uniform.address,
+            line_buffer: self.lines_buffer.address,
         };
 
         let pipeline = ctx.pipeline_arena.get_pipeline(self.fill_pass);
@@ -168,7 +231,7 @@ impl Example for LineRaster {
             &[ctx.texture_arena.storage_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-        frame.dispatch(1, 1, 1);
+        frame.dispatch(NUM_LINES, 1, 1);
 
         frame.begin_rendering(
             ctx.swapchain.get_current_image_view(),

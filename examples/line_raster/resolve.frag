@@ -2,9 +2,6 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-// In the beginning, colours never existed. There's nothing that was done before
-// you...
-
 #include <prelude.glsl>
 
 layout(location = 0) in vec2 in_uv;

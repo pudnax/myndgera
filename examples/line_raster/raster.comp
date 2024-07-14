@@ -10,6 +10,15 @@ layout(std430, buffer_reference,
     mat4 clip_to_world;
 };
 
+struct Line {
+    vec4 start;
+    vec4 end;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 16) buffer Lines {
+    Line lines[];
+};
+
 layout(set = 0, binding = 0, r32ui) uniform coherent
     restrict uimage2D gtextures[];
 
@@ -18,23 +27,33 @@ layout(std430, push_constant) uniform PushConstant {
     uint green_img;
     uint blue_img;
     Camera camera;
+    Lines lines_ptr;
 }
 pc;
 
-vec2 project(vec3 pos) {
+vec4 project(vec3 pos) {
     vec4 screen_pos = pc.camera.world_to_clip * vec4(pos, 1.0);
-    screen_pos.x = (screen_pos.x / screen_pos.w);
-    screen_pos.y = (screen_pos.y / screen_pos.w);
-
-    return screen_pos.xy;
+    screen_pos.xyz /= screen_pos.w;
+    return screen_pos;
 }
 
 bool in_bounds(vec2 pos, vec2 dims) {
     return all(greaterThanEqual(pos, ivec2(0))) && all(lessThan(pos, dims));
 }
 
+bool in_clip_space(vec4 pos) {
+    return !(pos.w <= 0.0 || pos.x < -1.02 || pos.x > 1.02 || pos.y < -1.02 ||
+             pos.y > 1.02);
+}
+
 vec2 get_uv_comp(uvec3 global_id, vec2 tex_size) {
     return (vec2(global_id) + 0.5) / vec2(tex_size);
+}
+
+vec2 ndc_to_raster(vec4 ndc, vec2 dims) {
+    vec2 res = (ndc.xy * 0.5 + 0.5);
+    res.y = 1. - res.y;
+    return res * dims;
 }
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -44,11 +63,20 @@ void main() {
 
     vec2 uv = get_uv_comp(gl_GlobalInvocationID, dims);
 
-    vec3 gray_start = vec3(0.75);
-    vec3 gray_end = vec3(0.25);
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx > 50) { return; }
 
-    vec2 ray_start = project(gray_start) * dims;
-    vec2 ray_end = project(gray_end) * dims;
+    Line line = pc.lines_ptr.lines[idx];
+    vec3 gray_start = line.start.xyz;
+    vec3 gray_end = line.end.xyz;
+
+    vec4 cray_start = project(gray_start);
+    vec4 cray_end = project(gray_end);
+
+    if (!in_clip_space(cray_start) && !in_clip_space(cray_end)) { return; }
+
+    vec2 ray_start = ndc_to_raster(cray_start, dims);
+    vec2 ray_end = ndc_to_raster(cray_end, dims);
 
     vec2 ray_dir = ray_end - ray_start;
     float ray_len_squared = dot(ray_dir, ray_dir);
@@ -63,29 +91,31 @@ void main() {
                      delta_dist;
 
     for (int i = 0; i < 2500; i++) {
-        if (!in_bounds(map_pos, dims)) { continue; }
         vec2 len = ray_start - map_pos;
         if (dot(len, len) > ray_len_squared) { break; }
 
         bvec2 mask = lessThanEqual(side_dist.xy, side_dist.yx);
         side_dist += vec2(mask) * delta_dist;
         map_pos += ivec2(vec2(mask)) * ray_step;
+        if (!in_bounds(map_pos, dims)) { continue; }
 
         imageAtomicAdd(gtextures[pc.red_img], map_pos.xy, 200u);
         imageAtomicAdd(gtextures[pc.green_img], map_pos.xy, 10u);
         imageAtomicAdd(gtextures[pc.blue_img], map_pos.xy, 25u);
     }
 
-    // float n = 52.;
-    // for (float i = 0.; i < n; ++i) {
-    //     vec2 p = start + dir * (i / n) * rlength;
-    //     p = p - uv;
-    //     ivec2 pix = ivec2(dims * p + 0.);
-    //     if ((pix.x >= 0 && pix.y >= 0) && (pix.x < dims.x && pix.y < dims.y))
-    //     {
-    //         imageAtomicAdd(gtextures[pc.red_img], pix, 25u);
-    //         imageAtomicAdd(gtextures[pc.green_img], pix, 10u);
-    //         imageAtomicAdd(gtextures[pc.blue_img], pix, 25u);
-    //     }
-    // }
+    vec2 start = ray_start / dims;
+    vec2 dir = ray_dir / dims;
+    float rlength = sqrt(ray_len_squared);
+    float n = 52.;
+    for (float i = 0.; i < n; ++i) {
+        vec2 p = start + dir * (i / n) * rlength;
+        // p = p - uv;
+        ivec2 pix = ivec2(dims * p + 0.);
+        if ((pix.x >= 0 && pix.y >= 0) && (pix.x < dims.x && pix.y < dims.y)) {
+            imageAtomicAdd(gtextures[pc.red_img], pix, 250u);
+            imageAtomicAdd(gtextures[pc.green_img], pix, 10u);
+            imageAtomicAdd(gtextures[pc.blue_img], pix, 25u);
+        }
+    }
 }

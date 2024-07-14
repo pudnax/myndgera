@@ -64,7 +64,7 @@ pub struct RenderContext<'a> {
     pub camera: &'a mut Camera,
     pub camera_uniform: &'a mut BufferTyped<CameraUniform>,
     pub window: &'a mut Window,
-    pub device: &'a Device,
+    pub device: &'a Arc<Device>,
     pub swapchain: &'a mut Swapchain,
     pub texture_arena: &'a mut TextureArena,
     pub pipeline_arena: &'a mut PipelineArena,
@@ -153,7 +153,8 @@ impl<E: Example> AppInit<E> {
         };
 
         let mut texture_arena = TextureArena::new(&device, &swapchain, &queue)?;
-        let mut camera = Camera::new(vec3(0., 0., 0.), 0., 0.);
+        // let mut camera = Camera::new(vec3(0., 0., 2.), 0., 0.);
+        let mut camera = Camera::new(vec3(0., -10., 18.), 0., 0.);
         let mut camera_uniform = device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             UsageFlags::FAST_DEVICE_ACCESS,
@@ -220,7 +221,7 @@ impl<E: Example> AppInit<E> {
             let sensitivity = 0.5;
             self.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
                 -sensitivity * self.input.mouse_state.delta.x,
-                sensitivity * self.input.mouse_state.delta.y,
+                -sensitivity * self.input.mouse_state.delta.y,
             );
         }
 
@@ -251,6 +252,7 @@ impl<E: Example> AppInit<E> {
         let mapped = staging.map_memory()?;
         *mapped = self.camera.get_uniform();
 
+        // TODO: Don't wait on fence
         self.device.one_time_submit(&self.queue, |device, cbuff| {
             let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
             let copy_info = vk::CopyBufferInfo2::default()

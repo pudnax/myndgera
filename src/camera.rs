@@ -43,7 +43,6 @@ impl Camera {
         let pos: Vec3 = tr.position.into();
         let view = Mat4::look_at_rh(pos, pos + tr.forward::<Vec3>(), tr.up());
         let proj = Mat4::perspective_infinite_reverse_rh(Self::FOVY, self.aspect, Self::ZNEAR);
-        let proj = Mat4::perspective_rh(Self::FOVY, self.aspect, Self::ZNEAR, 10000.);
         (proj, view)
     }
 
