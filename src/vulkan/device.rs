@@ -464,14 +464,12 @@ impl Buffer {
         if self.data.is_some() {
             return Ok(self.data.as_mut().unwrap());
         }
-        let size = self.memory.size() as usize;
-        let offset = self.memory.offset();
         let ptr = unsafe {
             self.memory
-                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
+                .map(AshMemoryDevice::wrap(&self.device), 0, self.size as _)?
         };
 
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) };
+        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), self.size as _) };
         self.data = Some(data);
 
         Ok(self.data.as_mut().unwrap())
@@ -496,16 +494,17 @@ pub struct BufferTyped<T: 'static> {
     device: Arc<Device>,
 }
 
-impl<T: bytemuck::NoUninit + bytemuck::AnyBitPattern> BufferTyped<T> {
+impl<T> BufferTyped<T> {
     pub fn map_memory(&mut self) -> Result<&mut T, MapError> {
         if self.data.is_some() {
             return Ok(self.data.as_mut().unwrap());
         }
-        let size = self.memory.size() as usize;
-        let offset = self.memory.offset();
         let ptr = unsafe {
-            self.memory
-                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
+            self.memory.map(
+                AshMemoryDevice::wrap(&self.device),
+                0,
+                std::mem::size_of::<T>(),
+            )?
         };
 
         self.data = Some(unsafe { &mut *ptr.as_ptr().cast() });

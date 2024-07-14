@@ -156,7 +156,7 @@ impl AppState {
         })
     }
 
-    fn update(&mut self, ctx: &RenderContext, cbuff: vk::CommandBuffer) -> Result<()> {
+    fn update(&mut self, ctx: &RenderContext, &cbuff: &vk::CommandBuffer) -> Result<()> {
         self.input.process_position(&mut self.stats.pos);
 
         if self.input.mouse_state.left_held() {
@@ -187,19 +187,18 @@ impl AppState {
         self.camera.position = self.camera.rig.final_transform.position.into();
         self.camera.rotation = self.camera.rig.final_transform.rotation.into();
 
-        // let mut staging = ctx.device.create_buffer_typed::<CameraUniform>(
-        //     vk::BufferUsageFlags::TRANSFER_SRC,
-        //     UsageFlags::UPLOAD,
-        // )?;
-        // let mapped = staging.map_memory()?;
-        // *mapped = self.camera.get_uniform();
-        //
-        // let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
-        // let copy_info = vk::CopyBufferInfo2::default()
-        //     .src_buffer(staging.buffer)
-        //     .dst_buffer(self.camera_uniform.buffer)
-        //     .regions(std::slice::from_ref(&region));
-        // unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
+        let mut staging = ctx.device.create_buffer_typed::<CameraUniform>(
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            UsageFlags::UPLOAD | UsageFlags::TRANSIENT,
+        )?;
+        let mapped = staging.map_memory()?;
+        *mapped = self.camera.get_uniform();
+        let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
+        let copy_info = vk::CopyBufferInfo2::default()
+            .src_buffer(staging.buffer)
+            .dst_buffer(self.camera_uniform.buffer)
+            .regions(std::slice::from_ref(&region));
+        unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
 
         Ok(())
     }
@@ -340,48 +339,12 @@ impl<E: Example> AppInit<E> {
 
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
-            let fence = unsafe {
-                self.device
-                    .create_fence(&vk::FenceCreateInfo::default(), None)?
-            };
-            let command_buffer = self.device.start_command_buffer()?;
-
-            let _ = state
-                .update(&self.render, command_buffer)
-                .map_err(|err| log::error!("{err}"));
-
-            let mut staging = self.device.create_buffer_typed::<CameraUniform>(
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                UsageFlags::UPLOAD,
-            )?;
-            let mapped = staging.map_memory()?;
-            *mapped = state.camera.get_uniform();
-            let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
-            let copy_info = vk::CopyBufferInfo2::default()
-                .src_buffer(staging.buffer)
-                .dst_buffer(state.camera_uniform.buffer)
-                .regions(std::slice::from_ref(&region));
-            unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_info) };
-
-            let _ = self
-                .example
-                .update(&self.render, state, &command_buffer)
-                .map_err(|err| log::error!("{err}"));
-
-            unsafe {
-                self.device.end_command_buffer(&command_buffer)?;
-
-                let submit_info = vk::SubmitInfo::default()
-                    .command_buffers(std::slice::from_ref(&command_buffer));
-
-                self.device
-                    .queue_submit(self.render.queue, &[submit_info], fence)?;
-                self.device.wait_for_fences(&[fence], true, u64::MAX)?;
-
-                self.device.destroy_fence(fence, None);
-                self.device
-                    .free_command_buffers(self.device.command_pool, &[command_buffer]);
-            }
+            self.device
+                .one_time_submit(&self.render.queue, |_, cbuff| {
+                    state.update(&self.render, &cbuff)?;
+                    self.example.update(&self.render, state, &cbuff)?;
+                    Ok(())
+                })?;
 
             state.input.mouse_state.refresh();
 

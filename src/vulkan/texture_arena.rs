@@ -449,7 +449,7 @@ impl TextureArena {
         let mut staging = self.device.create_buffer(
             memory.size(),
             vk::BufferUsageFlags::TRANSFER_SRC,
-            UsageFlags::UPLOAD,
+            UsageFlags::UPLOAD | UsageFlags::TRANSIENT,
         )?;
         let mapped = staging.map_memory()?;
         mapped[..data.len()].copy_from_slice(data);
