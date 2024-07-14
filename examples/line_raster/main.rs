@@ -51,11 +51,11 @@ impl Example for LineRaster {
     fn name() -> &'static str {
         "Line Rasteriazation"
     }
-    fn init(ctx: RenderContext) -> Result<Self> {
+    fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<SpawnPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let spawn_pass = ctx.pipeline_arena.create_compute_pipeline(
+        let spawn_pass = state.pipeline_arena.create_compute_pipeline(
             "examples/line_raster/spawn.comp",
             &[push_constant_range],
             &[],
@@ -70,18 +70,18 @@ impl Example for LineRaster {
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let fill_pass = ctx.pipeline_arena.create_compute_pipeline(
+        let fill_pass = state.pipeline_arena.create_compute_pipeline(
             "examples/line_raster/fill.comp",
             &[push_constant_range],
-            &[ctx.texture_arena.storage_set_layout],
+            &[state.texture_arena.storage_set_layout],
         )?;
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let raster_pass = ctx.pipeline_arena.create_compute_pipeline(
+        let raster_pass = state.pipeline_arena.create_compute_pipeline(
             "examples/line_raster/raster.comp",
             &[push_constant_range],
-            &[ctx.texture_arena.storage_set_layout],
+            &[state.texture_arena.storage_set_layout],
         )?;
 
         let vertex_shader_desc = VertexShaderDesc {
@@ -98,15 +98,15 @@ impl Example for LineRaster {
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<ResolvePC>() as _)
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-        let resolve_pass = ctx.pipeline_arena.create_render_pipeline(
+        let resolve_pass = state.pipeline_arena.create_render_pipeline(
             &VertexInputDesc::default(),
             &vertex_shader_desc,
             &fragment_shader_desc,
             &fragment_output_desc,
             &[push_constant_range],
             &[
-                ctx.texture_arena.images_set_layout,
-                ctx.texture_arena.storage_set_layout,
+                state.texture_arena.images_set_layout,
+                state.texture_arena.storage_set_layout,
             ],
         )?;
 
@@ -131,7 +131,7 @@ impl Example for LineRaster {
                 .device
                 .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
             let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT)?;
-            let idx = ctx
+            let idx = state
                 .texture_arena
                 .push_storage_image(image, view, Some(memory), Some(info));
             accumulate_images.push(idx as usize);
@@ -149,8 +149,13 @@ impl Example for LineRaster {
         })
     }
 
-    fn update(&mut self, ctx: UpdateContext) -> Result<()> {
-        let pipeline = ctx.pipeline_arena.get_pipeline(self.spawn_pass);
+    fn update(
+        &mut self,
+        ctx: &RenderContext,
+        state: &mut AppState,
+        &cbuff: &vk::CommandBuffer,
+    ) -> Result<()> {
+        let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
             line_buffer: self.lines_buffer.address,
         };
@@ -161,48 +166,51 @@ impl Example for LineRaster {
                 std::mem::size_of_val(&spawn_push_constant),
             );
             ctx.device.cmd_push_constants(
-                *ctx.cbuff,
+                cbuff,
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 bytes,
             );
-            ctx.device.cmd_bind_pipeline(
-                *ctx.cbuff,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.pipeline,
-            );
-            ctx.device.cmd_dispatch(*ctx.cbuff, NUM_LINES, 1, 1);
+            ctx.device
+                .cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
+            ctx.device.cmd_dispatch(cbuff, NUM_LINES, 1, 1);
         }
 
         Ok(())
     }
 
-    fn resize(&mut self, ctx: RenderContext) -> Result<()> {
+    fn resize(&mut self, ctx: &RenderContext, state: &mut AppState) -> Result<()> {
         let extent = ctx.swapchain.extent;
         for &i in &self.accumulate_images {
-            if let Some(info) = &mut ctx.texture_arena.storage_infos[i] {
+            if let Some(info) = &mut state.texture_arena.storage_infos[i] {
                 info.extent.width = extent.width;
                 info.extent.height = extent.height;
             }
         }
-        ctx.texture_arena
+        state
+            .texture_arena
             .update_storage_images_by_idx(&self.accumulate_images)?;
         Ok(())
     }
 
-    fn render(&mut self, ctx: RenderContext, frame: &mut FrameGuard) -> Result<()> {
+    fn render(
+        &mut self,
+        ctx: &RenderContext,
+        state: &mut AppState,
+        frame: &mut FrameGuard,
+    ) -> Result<()> {
         let idx = frame.image_idx;
 
         let raster_push_const = RasterPC {
             red_image: self.accumulate_images[0] as u32,
             green_image: self.accumulate_images[1] as u32,
             blue_image: self.accumulate_images[2] as u32,
-            camera_buffer: ctx.camera_uniform.address,
+            camera_buffer: state.camera_uniform.address,
             line_buffer: self.lines_buffer.address,
         };
 
-        let pipeline = ctx.pipeline_arena.get_pipeline(self.fill_pass);
+        let pipeline = state.pipeline_arena.get_pipeline(self.fill_pass);
         frame.push_constant(
             pipeline.layout,
             vk::ShaderStageFlags::COMPUTE,
@@ -211,7 +219,7 @@ impl Example for LineRaster {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            &[ctx.texture_arena.storage_set],
+            &[state.texture_arena.storage_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
         const SUBGROUP_SIZE: u32 = 16;
@@ -222,7 +230,7 @@ impl Example for LineRaster {
             1,
         );
 
-        let pipeline = ctx.pipeline_arena.get_pipeline(self.raster_pass);
+        let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
         frame.push_constant(
             pipeline.layout,
             vk::ShaderStageFlags::COMPUTE,
@@ -231,7 +239,7 @@ impl Example for LineRaster {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            &[ctx.texture_arena.storage_set],
+            &[state.texture_arena.storage_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
         frame.dispatch(NUM_LINES, 1, 1);
@@ -240,7 +248,7 @@ impl Example for LineRaster {
             ctx.swapchain.get_current_image_view(),
             [0., 0.025, 0.025, 1.0],
         );
-        let pipeline = ctx.pipeline_arena.get_pipeline(self.resolve_pass);
+        let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
         frame.push_constant(
             pipeline.layout,
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -254,7 +262,10 @@ impl Example for LineRaster {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout,
-            &[ctx.texture_arena.images_set, ctx.texture_arena.storage_set],
+            &[
+                state.texture_arena.images_set,
+                state.texture_arena.storage_set,
+            ],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
 

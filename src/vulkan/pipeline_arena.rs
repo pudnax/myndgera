@@ -467,7 +467,7 @@ pub struct PipelineArena {
     pub compute: ComputeArena,
     pub path_mapping: AHashMap<PathBuf, AHashSet<Either<RenderHandle, ComputeHandle>>>,
     pub shader_compiler: ShaderCompiler,
-    file_watcher: Watcher,
+    pub file_watcher: Watcher,
     device: Arc<Device>,
 }
 
