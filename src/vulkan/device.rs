@@ -128,6 +128,31 @@ impl Device {
         Ok(view)
     }
 
+    pub fn start_command_buffer(&self) -> Result<vk::CommandBuffer> {
+        let command_buffer = unsafe {
+            self.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(self.command_pool)
+                    .command_buffer_count(1)
+                    .level(vk::CommandBufferLevel::PRIMARY),
+            )?[0]
+        };
+
+        unsafe {
+            self.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+        }
+
+        Ok(command_buffer)
+    }
+
+    pub fn end_command_buffer(&self, &cbuff: &vk::CommandBuffer) -> VkResult<()> {
+        unsafe { self.device.end_command_buffer(cbuff) }
+    }
+
     pub fn one_time_submit(
         self: &Arc<Self>,
         queue: &vk::Queue,
@@ -152,7 +177,7 @@ impl Device {
 
             callbk(self, command_buffer)?;
 
-            self.end_command_buffer(command_buffer)?;
+            self.end_command_buffer(&command_buffer)?;
 
             let submit_info =
                 vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));

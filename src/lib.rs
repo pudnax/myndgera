@@ -73,6 +73,20 @@ pub struct RenderContext<'a> {
     pub stats: &'a mut GlobalStats,
 }
 
+pub struct UpdateContext<'a> {
+    pub cbuff: &'a vk::CommandBuffer,
+    pub camera: &'a mut Camera,
+    pub camera_uniform: &'a mut BufferTyped<CameraUniform>,
+    pub window: &'a mut Window,
+    pub device: &'a Arc<Device>,
+    pub swapchain: &'a mut Swapchain,
+    pub texture_arena: &'a mut TextureArena,
+    pub pipeline_arena: &'a mut PipelineArena,
+    pub queue: &'a vk::Queue,
+    pub transfer_queue: &'a vk::Queue,
+    pub stats: &'a mut GlobalStats,
+}
+
 pub trait Example: 'static + Sized {
     fn name() -> &'static str {
         "Myndgera"
@@ -81,7 +95,7 @@ pub trait Example: 'static + Sized {
     fn resize(&mut self, _ctx: RenderContext) -> Result<()> {
         Ok(())
     }
-    fn update(&mut self, _ctx: RenderContext) -> Result<()> {
+    fn update(&mut self, _ctx: UpdateContext) -> Result<()> {
         Ok(())
     }
     fn render(&mut self, _ctx: RenderContext, _frame: &mut FrameGuard) -> Result<()> {
@@ -252,7 +266,6 @@ impl<E: Example> AppInit<E> {
         let mapped = staging.map_memory()?;
         *mapped = self.camera.get_uniform();
 
-        // TODO: Don't wait on fence
         self.device.one_time_submit(&self.queue, |device, cbuff| {
             let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
             let copy_info = vk::CopyBufferInfo2::default()
@@ -260,22 +273,24 @@ impl<E: Example> AppInit<E> {
                 .dst_buffer(self.camera_uniform.buffer)
                 .regions(std::slice::from_ref(&region));
             unsafe { device.cmd_copy_buffer2(cbuff, &copy_info) };
+
+            let ctx = UpdateContext {
+                cbuff: &cbuff,
+                camera: &mut self.camera,
+                camera_uniform: &mut self.camera_uniform,
+                window: &mut self.window,
+                device: &device,
+                swapchain: &mut self.swapchain,
+                texture_arena: &mut self.texture_arena,
+                pipeline_arena: &mut self.pipeline_arena,
+                queue: &self.queue,
+                transfer_queue: &mut self.transfer_queue,
+                stats: &mut self.stats,
+            };
+            self.example.update(ctx)?;
+
             Ok(())
         })?;
-
-        let ctx = RenderContext {
-            camera: &mut self.camera,
-            camera_uniform: &mut self.camera_uniform,
-            window: &mut self.window,
-            device: &mut self.device,
-            swapchain: &mut self.swapchain,
-            texture_arena: &mut self.texture_arena,
-            pipeline_arena: &mut self.pipeline_arena,
-            queue: &mut self.queue,
-            transfer_queue: &mut self.transfer_queue,
-            stats: &mut self.stats,
-        };
-        self.example.update(ctx)?;
 
         Ok(())
     }

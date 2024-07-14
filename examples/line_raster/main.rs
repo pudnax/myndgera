@@ -149,30 +149,33 @@ impl Example for LineRaster {
         })
     }
 
-    fn update(&mut self, ctx: RenderContext) -> Result<()> {
+    fn update(&mut self, ctx: UpdateContext) -> Result<()> {
         let pipeline = ctx.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
             line_buffer: self.lines_buffer.address,
         };
-        ctx.device.one_time_submit(ctx.queue, |device, cbuff| {
-            unsafe {
-                let ptr = core::ptr::from_ref(&spawn_push_constant);
-                let bytes = core::slice::from_raw_parts(
-                    ptr.cast(),
-                    std::mem::size_of_val(&spawn_push_constant),
-                );
-                device.cmd_push_constants(
-                    cbuff,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    bytes,
-                );
-                device.cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
-                device.cmd_dispatch(cbuff, NUM_LINES, 1, 1);
-            }
-            Ok(())
-        })
+        unsafe {
+            let ptr = core::ptr::from_ref(&spawn_push_constant);
+            let bytes = core::slice::from_raw_parts(
+                ptr.cast(),
+                std::mem::size_of_val(&spawn_push_constant),
+            );
+            ctx.device.cmd_push_constants(
+                *ctx.cbuff,
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytes,
+            );
+            ctx.device.cmd_bind_pipeline(
+                *ctx.cbuff,
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.pipeline,
+            );
+            ctx.device.cmd_dispatch(*ctx.cbuff, NUM_LINES, 1, 1);
+        }
+
+        Ok(())
     }
 
     fn resize(&mut self, ctx: RenderContext) -> Result<()> {

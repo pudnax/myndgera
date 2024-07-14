@@ -332,7 +332,7 @@ impl Swapchain {
                 .cmd_pipeline_barrier2(frame.command_buffer, &dependency_info)
         };
 
-        unsafe { self.device.end_command_buffer(frame.command_buffer) }?;
+        self.device.end_command_buffer(&frame.command_buffer)?;
 
         let wait_semaphores = [frame.image_available_semaphore];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
