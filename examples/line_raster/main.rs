@@ -14,6 +14,7 @@ struct Line {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct SpawnPC {
+    buffer_length: u32,
     line_buffer: u64,
 }
 
@@ -60,7 +61,8 @@ impl Example for LineRaster {
             &[push_constant_range],
             &[],
         )?;
-        let size = std::mem::size_of::<Line>() * NUM_LINES as usize;
+        let size =
+            std::mem::size_of_val(&NUM_LINES) + std::mem::size_of::<Line>() * NUM_LINES as usize;
         let lines_buffer = ctx.device.create_buffer(
             size as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -157,6 +159,7 @@ impl Example for LineRaster {
     ) -> Result<()> {
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
+            buffer_length: NUM_LINES,
             line_buffer: self.lines_buffer.address,
         };
         unsafe {

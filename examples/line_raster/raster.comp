@@ -48,10 +48,8 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
     uvec2 dims = imageSize(gtextures[pc.red_img]);
 
-    vec2 uv = get_uv_comp(gl_GlobalInvocationID, dims);
-
     uint idx = gl_GlobalInvocationID.x;
-    if (idx > 50) { return; }
+    if (idx > pc.lines_ptr.len) { return; }
 
     Line line = pc.lines_ptr.lines[idx];
     vec3 gray_start = line.start.xyz;
