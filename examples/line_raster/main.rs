@@ -87,7 +87,7 @@ impl Example for LineRaster {
         )?;
 
         let vertex_shader_desc = VertexShaderDesc {
-            shader_path: "examples/line_raster/resolve.vert".into(),
+            shader_path: "shaders/screen_trig.vert".into(),
             ..Default::default()
         };
         let fragment_shader_desc = FragmentShaderDesc {
@@ -249,6 +249,7 @@ impl Example for LineRaster {
 
         frame.begin_rendering(
             ctx.swapchain.get_current_image_view(),
+            vk::AttachmentLoadOp::CLEAR,
             [0., 0.025, 0.025, 1.0],
         );
         let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
@@ -256,7 +257,7 @@ impl Example for LineRaster {
             pipeline.layout,
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             &[ResolvePC {
-                current_image: idx as u32,
+                current_image: state.texture_arena.external_sampled_img_idx[idx as usize],
                 red_image: self.accumulate_images[0] as u32,
                 green_image: self.accumulate_images[1] as u32,
                 bluew_image: self.accumulate_images[2] as u32,
@@ -271,7 +272,6 @@ impl Example for LineRaster {
             ],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
-
         frame.draw(3, 0, 1, 0);
         frame.end_rendering();
 

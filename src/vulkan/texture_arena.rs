@@ -122,7 +122,8 @@ pub struct TextureArena {
     pub storage_views: Vec<vk::ImageView>,
     pub storage_set: vk::DescriptorSet,
     pub storage_set_layout: vk::DescriptorSetLayout,
-    pub swapchain_img_idx: Vec<u32>,
+    pub external_sampled_img_idx: Vec<u32>,
+    pub external_storage_img_idx: Vec<u32>,
 
     pub samplers: [vk::Sampler; SAMPLER_COUNT as usize],
 
@@ -285,7 +286,8 @@ impl TextureArena {
             storage_infos: vec![],
             storage_set,
             storage_set_layout,
-            swapchain_img_idx: vec![],
+            external_storage_img_idx: vec![],
+            external_sampled_img_idx: vec![],
             device: device.clone(),
         };
 
@@ -369,8 +371,10 @@ impl TextureArena {
             .name_object(texture_arena.views[BLUE_IMAGE_IDX], "Blue Noise Image View");
 
         for (image, view) in swapchain.images.iter().zip(&swapchain.views) {
+            let idx = texture_arena.push_sampled_image(*image, *view, None, None);
+            texture_arena.external_sampled_img_idx.push(idx);
             let idx = texture_arena.push_storage_image(*image, *view, None, None);
-            texture_arena.swapchain_img_idx.push(idx);
+            texture_arena.external_storage_img_idx.push(idx);
         }
 
         Ok(texture_arena)
@@ -586,8 +590,10 @@ impl Drop for TextureArena {
         unsafe {
             self.views
                 .iter()
-                .filter(|view| !view.is_null())
-                .for_each(|&view| self.device.destroy_image_view(view, None));
+                .enumerate()
+                .filter(|(_, view)| !view.is_null())
+                .filter(|(i, _)| !self.external_sampled_img_idx.contains(&(*i as u32)))
+                .for_each(|(_, &view)| self.device.destroy_image_view(view, None));
             self.images
                 .iter_mut()
                 .zip(self.memories.iter_mut())
@@ -598,9 +604,10 @@ impl Drop for TextureArena {
 
             self.storage_views
                 .iter()
-                .skip(self.swapchain_img_idx.len())
-                .filter(|view| !view.is_null())
-                .for_each(|&view| self.device.destroy_image_view(view, None));
+                .enumerate()
+                .filter(|(_, view)| !view.is_null())
+                .filter(|(i, _)| !self.external_storage_img_idx.contains(&(*i as u32)))
+                .for_each(|(_, &view)| self.device.destroy_image_view(view, None));
             self.storage_images
                 .iter_mut()
                 .zip(self.storage_memory.iter_mut())

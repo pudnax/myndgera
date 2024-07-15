@@ -384,7 +384,12 @@ impl FrameGuard {
         &self.frame.command_buffer
     }
 
-    pub fn begin_rendering(&mut self, view: &vk::ImageView, color: [f32; 4]) {
+    pub fn begin_rendering(
+        &mut self,
+        view: &vk::ImageView,
+        load_op: vk::AttachmentLoadOp,
+        color: [f32; 4],
+    ) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue { float32: color },
         };
@@ -392,7 +397,7 @@ impl FrameGuard {
             .image_view(*view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .resolve_image_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(load_op)
             .store_op(vk::AttachmentStoreOp::STORE)
             .clear_value(clear_color)];
         let rendering_info = vk::RenderingInfo::default()

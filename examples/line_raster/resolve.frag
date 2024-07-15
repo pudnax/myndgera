@@ -34,10 +34,10 @@ void main() {
     vec2 dims = vec2(imageSize(gstorage_textures[pc.red_img]));
     vec2 uv = (in_uv + -0.5) * vec2(dims.x / dims.y, 1);
 
-    vec3 col = vec3(.1);
+    vec3 col = vec3(0.);
+    vec2 u = in_uv * vec2(1., -1.) - vec2(0., -1);
+    col += Tex(pc.idx, 0, u).rgb;
 
-    vec2 u = in_uv + vec2(0., -1.);
-    u.y *= -1.;
     ivec2 pix = ivec2(u * dims);
     col.r += imageLoad(gstorage_textures[pc.red_img], pix).x / 255.;
     col.g += imageLoad(gstorage_textures[pc.green_img], pix).x / 255.;

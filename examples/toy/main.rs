@@ -92,6 +92,7 @@ impl Example for Toy {
 
         frame.begin_rendering(
             ctx.swapchain.get_current_image_view(),
+            vk::AttachmentLoadOp::CLEAR,
             [0., 0.025, 0.025, 1.0],
         );
         let pipeline = state.pipeline_arena.get_pipeline(self.render_pipeline);

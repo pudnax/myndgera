@@ -370,7 +370,10 @@ impl<E: Example> AppInit<E> {
         for (idx, view) in self.render.swapchain.views.iter().enumerate() {
             self.state
                 .texture_arena
-                .update_storage_image(idx as u32, view)
+                .update_storage_image(self.state.texture_arena.external_storage_img_idx[idx], view);
+            self.state
+                .texture_arena
+                .update_sampled_image(self.state.texture_arena.external_sampled_img_idx[idx], view)
         }
 
         for i in SCREENSIZED_IMAGE_INDICES {
