@@ -35,6 +35,7 @@ struct ResolvePC {
     red_image: u32,
     green_image: u32,
     bluew_image: u32,
+    camera_buffer: u64,
 }
 
 const NUM_LINES: u32 = 50;
@@ -261,6 +262,7 @@ impl Example for LineRaster {
                 red_image: self.accumulate_images[0] as u32,
                 green_image: self.accumulate_images[1] as u32,
                 bluew_image: self.accumulate_images[2] as u32,
+                camera_buffer: state.camera_uniform.address,
             }],
         );
         frame.bind_descriptor_sets(
