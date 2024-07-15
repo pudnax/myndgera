@@ -1,14 +1,14 @@
 use anyhow::{Ok, Result};
 use ash::vk;
-use glam::Vec4;
+use glam::Vec3;
 use gpu_alloc::UsageFlags;
 use myndgera::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct Line {
-    start: Vec4,
-    end: Vec4,
+    start: Vec3,
+    end: Vec3,
 }
 
 #[repr(C)]

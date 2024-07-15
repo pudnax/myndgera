@@ -26,7 +26,12 @@ impl ShaderCompiler {
         let watcher_copy = watcher.clone();
         options.set_include_callback(move |name, include_type, source_file, _depth| {
             let path = match include_type {
-                IncludeType::Relative => Path::new(source_file).parent().unwrap().join(name),
+                IncludeType::Relative => {
+                    let mapping = watcher_copy.include_mapping.lock();
+                    let source_file = mapping.get(Path::new(source_file)).unwrap();
+                    let source_path = &source_file.iter().next().unwrap().path;
+                    source_path.parent().unwrap().join(name)
+                }
                 IncludeType::Standard => Path::new(SHADER_FOLDER).join(name),
             };
             // TODO: recreate dependencies in case someone removes includes

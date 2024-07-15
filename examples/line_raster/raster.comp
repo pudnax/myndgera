@@ -3,21 +3,8 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-layout(std430, buffer_reference,
-       buffer_reference_align = 16) readonly buffer Camera {
-    vec4 pos;
-    mat4 world_to_clip;
-    mat4 clip_to_world;
-};
-
-struct Line {
-    vec4 start;
-    vec4 end;
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 16) buffer Lines {
-    Line lines[];
-};
+#include "./shared.glsl"
+#include <camera.glsl>
 
 layout(set = 0, binding = 0, r32ui) uniform coherent
     restrict uimage2D gtextures[];
@@ -26,13 +13,13 @@ layout(std430, push_constant) uniform PushConstant {
     uint red_img;
     uint green_img;
     uint blue_img;
-    Camera camera;
+    CameraBuf camera;
     Lines lines_ptr;
 }
 pc;
 
 vec4 project(vec3 pos) {
-    vec4 screen_pos = pc.camera.world_to_clip * vec4(pos, 1.0);
+    vec4 screen_pos = pc.camera.cam.world_to_clip * vec4(pos, 1.0);
     screen_pos.xyz /= screen_pos.w;
     return screen_pos;
 }
@@ -104,18 +91,19 @@ void main() {
         imageAtomicAdd(gtextures[pc.blue_img], map_pos.xy, 25u);
     }
 
-    vec2 start = ray_start / dims;
-    vec2 dir = ray_dir / dims;
+    vec2 start = ray_start;
+    vec2 dir = ray_dir;
     float rlength = sqrt(ray_len_squared);
-    float n = 52.;
-    for (float i = 0.; i < n; ++i) {
-        vec2 p = start + dir * (i / n) * rlength;
-        // p = p - uv;
-        ivec2 pix = ivec2(dims * p + 0.);
-        if ((pix.x >= 0 && pix.y >= 0) && (pix.x < dims.x && pix.y < dims.y)) {
-            imageAtomicAdd(gtextures[pc.red_img], pix, 250u);
-            imageAtomicAdd(gtextures[pc.green_img], pix, 10u);
-            imageAtomicAdd(gtextures[pc.blue_img], pix, 25u);
-        }
+    float n = 250.;
+    float step = rlength / n;
+    step = max(step, sqrt(1.));
+    for (float s = 0; s < rlength; s += step) {
+        vec2 p = start + dir * s;
+        ivec2 pix = ivec2(p + 0.);
+        // if ((pix.x >= 0 && pix.y >= 0) && (pix.x < dims.x && pix.y < dims.y))
+        // { }
+        imageAtomicAdd(gtextures[pc.red_img], pix, 250u);
+        imageAtomicAdd(gtextures[pc.green_img], pix, 10u);
+        imageAtomicAdd(gtextures[pc.blue_img], pix, 25u);
     }
 }

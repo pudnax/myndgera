@@ -180,7 +180,7 @@ impl AppState {
         self.camera
             .rig
             .driver_mut::<dolly::drivers::Position>()
-            .translate(move_vec * dt as f32 * 5.0);
+            .translate(move_vec * dt * 5.0);
 
         self.camera.rig.update(dt as _);
 

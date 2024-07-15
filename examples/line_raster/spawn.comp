@@ -3,28 +3,40 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
-struct Line {
-    vec4 start;
-    vec4 end;
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 16) buffer Lines {
-    Line lines[];
-};
+#include "shared.glsl"
 
 layout(std430, push_constant) uniform PushConstant { Lines lines_ptr; }
 pc;
 
+vec3 rand_cone_direction(const float i, const float angularRadius,
+                         const int steps) {
+    float x = i * 2.0 - 1.0;
+    float y = i * float(steps) * 16.0 * 16.0 * goldenAngle;
+
+    float angle = acos(x) * radians(angularRadius) * 1. / PI;
+    float c = cos(angle);
+    float s = sin(angle);
+
+    return vec3(cos(y) * s, sin(y) * s, c);
+}
+
+mat2 rot(float a) {
+    float c = cos(a), s = sin(a);
+    return mat2(c, -s, s, c);
+}
+
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
-    if (gl_GlobalInvocationID.x > 50) { return; }
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx > 50) { return; }
 
-    for (int i = 0; i < 50; ++i) {
-        float x = float(i) - 25.;
-        float y = 1. * (mod(i, 2) - .5);
-        float z = 1.;
-        Line line = Line(vec4(x, y, z, 0.), vec4(x, -y, -z, 1.));
-        pc.lines_ptr.lines[i] = line;
-    }
+    vec3 origin = vec3(0.);
+    vec3 dir = rand_cone_direction(float(idx) / 50, 6., 50);
+    dir = normalize(dir);
+    dir.xz *= rot(0.6);
+    float len = 10.;
+    vec3 end = origin + dir * len;
+    Line line = Line(vec3(origin), vec3(end));
+    pc.lines_ptr.lines[idx] = line;
 }
