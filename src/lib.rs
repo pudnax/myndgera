@@ -4,6 +4,7 @@
 mod camera;
 pub mod default_shaders;
 mod input;
+mod passes;
 mod recorder;
 mod shader_compiler;
 mod utils;
@@ -29,9 +30,10 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use self::camera::{Camera, CameraUniform};
 pub use self::{
+    camera::*,
     input::Input,
+    passes::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
     utils::*,
@@ -112,6 +114,7 @@ impl AppState {
     pub fn new(
         ctx: &RenderContext,
         proxy: EventLoopProxy<UserEvent>,
+        camera: Option<Camera>,
         record_time: Option<Duration>,
     ) -> anyhow::Result<Self> {
         let watcher = Watcher::new(proxy)?;
@@ -128,7 +131,7 @@ impl AppState {
         };
 
         let texture_arena = TextureArena::new(&ctx.device, &ctx.swapchain, &ctx.queue)?;
-        let camera = Camera::new(vec3(0., -10., 18.), 0., 0.);
+        let camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
         let camera_uniform = ctx.device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             UsageFlags::FAST_DEVICE_ACCESS,
@@ -306,10 +309,11 @@ impl<E: Example> AppInit<E> {
         event_loop: &winit::event_loop::ActiveEventLoop,
         proxy: EventLoopProxy<UserEvent>,
         window_attributes: WindowAttributes,
+        camera: Option<Camera>,
         record_time: Option<Duration>,
     ) -> anyhow::Result<Self> {
         let render = RenderContext::new(event_loop, window_attributes)?;
-        let mut state = AppState::new(&render, proxy, record_time)?;
+        let mut state = AppState::new(&render, proxy, camera, record_time)?;
         let example = E::init(&render, &mut state)?;
         render.window.set_title(E::name());
 
@@ -639,13 +643,15 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
 pub struct App<E> {
     proxy: EventLoopProxy<UserEvent>,
     inner: AppEnum<E>,
+    camera: Option<Camera>,
 }
 
 impl<E> App<E> {
-    pub fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    pub fn new(proxy: EventLoopProxy<UserEvent>, camera: Option<Camera>) -> Self {
         Self {
             proxy,
             inner: AppEnum::Uninitialized,
+            camera,
         }
     }
 }
@@ -678,6 +684,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for App<E> {
                     event_loop,
                     self.proxy.clone(),
                     window_attributes,
+                    self.camera.take(),
                     record_time,
                 )
                 .expect("Failed to create application");

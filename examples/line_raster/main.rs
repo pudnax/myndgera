@@ -2,7 +2,7 @@ use std::mem;
 
 use anyhow::{Ok, Result};
 use ash::vk;
-use glam::{Vec3, Vec4};
+use glam::{vec3, Vec3, Vec4};
 use gpu_alloc::UsageFlags;
 use myndgera::*;
 
@@ -290,7 +290,8 @@ impl Example for LineRaster {
 fn main() -> Result<()> {
     let event_loop = winit::event_loop::EventLoop::with_user_event().build()?;
 
-    let mut app = App::<LineRaster>::new(event_loop.create_proxy());
+    let camera = Camera::new(vec3(0., 0., 10.), 0., 0.);
+    let mut app = App::<LineRaster>::new(event_loop.create_proxy(), Some(camera));
     event_loop.run_app(&mut app)?;
     Ok(())
 }

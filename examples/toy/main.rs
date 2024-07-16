@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         default_shaders::create_default_shaders(&shader_dir)?;
     }
 
-    let mut app = App::<Toy>::new(event_loop.create_proxy());
+    let mut app = App::<Toy>::new(event_loop.create_proxy(), None);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
