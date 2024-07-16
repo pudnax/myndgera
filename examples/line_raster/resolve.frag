@@ -2,6 +2,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
 
+#include "shared.glsl"
 #include <camera.glsl>
 #include <prelude.glsl>
 
@@ -32,54 +33,60 @@ layout(std430, push_constant) uniform PushConstant {
 }
 pc;
 
-float sd_box(vec3 p, vec3 h) {
-    p = abs(p) - h;
-    return length(max(p, 0.)) + min(0., max(p.x, max(p.y, p.z)));
-}
+vec2 RESOLUTION;
 
 float map(vec3 p) { return sd_box(p, vec3(0.1, 0.25, 0.1)); }
 
-vec2 trace(vec3 eye, vec3 dir) {
-    float t = 0.;
-    for (int i = 0; i < 100; i++) {
-        vec3 pos = eye + dir * t;
-        float d = map(pos);
-        if (d < 0.001) { return vec2(t, 1.); }
-        t += d;
-        if (t > 500.) { break; }
-    }
-    return vec2(-1.);
+vec3 get_norm(vec3 p, float eps) {
+    mat3 k = mat3(p, p, p) - mat3(eps);
+    return normalize(vec3(sdf_model(p)) -
+                     vec3(sdf_model(k[0]), sdf_model(k[1]), sdf_model(k[2])));
 }
 
-vec3 get_norm(vec3 p) {
-    mat3 k = mat3(p, p, p) - mat3(0.0001);
-    return normalize(map(p) - vec3(map(k[0]), map(k[1]), map(k[2])));
+vec3 wire_trace(vec3 eye, vec3 dir) {
+    vec3 wire_color = vec3(1., 0., 1.);
+    vec3 col = vec3(0.);
+    float s = 1.;
+    float t = 0.;
+    for (int i = 0; i < 200; i++) {
+        vec3 pos = eye + dir * t;
+        float d = sdf_model(pos);
+        if (abs(d) < 0.001) {
+            float edge = 0.00015 * t * clamp(fwidth(1. * in_uv).x, 1., 2.5);
+            float edge_amount =
+                length(get_norm(pos, 0.012) - get_norm(pos, edge));
+            col += wire_color * smoothstep(0.0, 1.0, edge_amount) * 0.5;
+            s *= -1.;
+            d = 0.25 * s;
+        }
+        t += d * s;
+        if (t > 500.) { break; }
+    }
+    return max(col, vec3(0.));
 }
 
 void main() {
     vec2 dims = vec2(imageSize(gstorage_textures[pc.red_img]));
+    RESOLUTION = dims;
     vec2 uv = (in_uv * 2. - 1.) * vec2(dims.x / dims.y, 1);
 
-    vec4 screen_point = vec4(in_uv * 2. - 1., 0., 1.);
-    vec4 screen_tangent = screen_point + vec4(0., 0., 1., 0.);
+    vec2 screen_point = in_uv * 2. - 1.0;
 
-    vec4 view_pos = pc.camera.cam.clip_to_world * screen_point;
-    vec4 view_tang = pc.camera.cam.clip_to_world * screen_tangent;
+    vec4 view_pos = pc.camera.cam.clip_to_world * vec4(screen_point, 1., 1.);
+    vec4 view_dir = pc.camera.cam.clip_to_world * vec4(screen_point, 0., 1.);
 
-    vec3 eye = vec3(0., 0., -3);
-    vec3 dir = normalize(vec3(uv, 1.));
-
-    eye = view_pos.xyz / view_pos.w;
-    eye = pc.camera.cam.pos.xyz;
-    dir = normalize(view_tang.xyz / view_tang.w - eye);
+    vec3 eye = view_pos.xyz / view_pos.w;
+    vec3 dir = normalize(view_dir.xyz);
 
     vec3 col = vec3(0.);
     vec2 hit = trace(eye, dir);
     if (hit.y > 0.) {
         vec3 pos = eye + dir * hit.x;
         vec3 nor = get_norm(pos);
-        col = nor * 0.5 + 0.5;
+        // col = 0.03 * (nor * 0.5 + 0.5);
     }
+
+    col += wire_trace(eye, dir);
 
     vec2 u = in_uv;
     u.y = 1. - u.y;

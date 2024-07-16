@@ -311,6 +311,7 @@ impl<E: Example> AppInit<E> {
         let render = RenderContext::new(event_loop, window_attributes)?;
         let mut state = AppState::new(&render, proxy, record_time)?;
         let example = E::init(&render, &mut state)?;
+        render.window.set_title(E::name());
 
         let update_fence = unsafe {
             render

@@ -1,12 +1,15 @@
+use std::mem;
+
 use anyhow::{Ok, Result};
 use ash::vk;
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 use gpu_alloc::UsageFlags;
 use myndgera::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct Line {
+struct Ray {
+    color: Vec4,
     start: Vec3,
     end: Vec3,
 }
@@ -14,7 +17,9 @@ struct Line {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct SpawnPC {
-    buffer_length: u32,
+    num_rays: u32,
+    num_bounces: u32,
+    time: f32,
     line_buffer: u64,
 }
 
@@ -38,7 +43,8 @@ struct ResolvePC {
     camera_buffer: u64,
 }
 
-const NUM_LINES: u32 = 50;
+const NUM_BOUNCES: u32 = 5;
+const NUM_RAYS: u32 = 150;
 
 struct LineRaster {
     spawn_pass: ComputeHandle,
@@ -63,7 +69,7 @@ impl Example for LineRaster {
             &[],
         )?;
         let size =
-            std::mem::size_of_val(&NUM_LINES) + std::mem::size_of::<Line>() * NUM_LINES as usize;
+            mem::size_of_val(&NUM_RAYS) + mem::size_of::<Ray>() * (NUM_RAYS * NUM_BOUNCES) as usize;
         let lines_buffer = ctx.device.create_buffer(
             size as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -160,15 +166,15 @@ impl Example for LineRaster {
     ) -> Result<()> {
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
-            buffer_length: NUM_LINES,
+            num_rays: NUM_RAYS,
+            num_bounces: NUM_BOUNCES,
+            time: state.stats.time,
             line_buffer: self.lines_buffer.address,
         };
         unsafe {
             let ptr = core::ptr::from_ref(&spawn_push_constant);
-            let bytes = core::slice::from_raw_parts(
-                ptr.cast(),
-                std::mem::size_of_val(&spawn_push_constant),
-            );
+            let bytes =
+                core::slice::from_raw_parts(ptr.cast(), mem::size_of_val(&spawn_push_constant));
             ctx.device.cmd_push_constants(
                 cbuff,
                 pipeline.layout,
@@ -178,7 +184,7 @@ impl Example for LineRaster {
             );
             ctx.device
                 .cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
-            ctx.device.cmd_dispatch(cbuff, NUM_LINES, 1, 1);
+            ctx.device.cmd_dispatch(cbuff, NUM_RAYS, 1, 1);
         }
 
         Ok(())
@@ -246,7 +252,7 @@ impl Example for LineRaster {
             &[state.texture_arena.storage_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-        frame.dispatch(NUM_LINES, 1, 1);
+        frame.dispatch(NUM_RAYS * NUM_BOUNCES, 1, 1);
 
         frame.begin_rendering(
             ctx.swapchain.get_current_image_view(),
