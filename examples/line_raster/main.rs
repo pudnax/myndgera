@@ -6,6 +6,8 @@ use glam::{vec3, Vec3, Vec4};
 use gpu_alloc::UsageFlags;
 use myndgera::*;
 
+// use self::bloom::Bloom;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct Ray {
@@ -36,11 +38,17 @@ struct RasterPC {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct ResolvePC {
-    current_image: u32,
+    target_image: u32,
     red_image: u32,
     green_image: u32,
-    bluew_image: u32,
+    blue_image: u32,
     camera_buffer: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct PostprocessPC {
+    source_image: u32,
 }
 
 const NUM_BOUNCES: u32 = 5;
@@ -51,8 +59,15 @@ struct LineRaster {
     lines_buffer: Buffer,
     fill_pass: ComputeHandle,
     raster_pass: ComputeHandle,
-    resolve_pass: RenderHandle,
+    resolve_pass: ComputeHandle,
+    postprocess_pass: RenderHandle,
     accumulate_images: Vec<usize>,
+    hdr_target: ManagedImage,
+    hdr_target_view: vk::ImageView,
+    hdr_target_info: vk::ImageCreateInfo<'static>,
+    hdr_target_sampled_idx: u32,
+    hdr_target_storage_idx: u32,
+    // bloom_pass: Bloom,
 }
 
 impl Example for LineRaster {
@@ -60,14 +75,16 @@ impl Example for LineRaster {
         "Line Rasteriazation"
     }
     fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
-        let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<SpawnPC>() as _)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let spawn_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/spawn.comp",
-            &[push_constant_range],
-            &[],
-        )?;
+        let spawn_pass = {
+            let push_constant_range = vk::PushConstantRange::default()
+                .size(size_of::<SpawnPC>() as _)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE);
+            state.pipeline_arena.create_compute_pipeline(
+                "examples/line_raster/spawn.comp",
+                &[push_constant_range],
+                &[],
+            )?
+        };
         let size =
             mem::size_of_val(&NUM_RAYS) + mem::size_of::<Ray>() * (NUM_RAYS * NUM_BOUNCES) as usize;
         let lines_buffer = ctx.device.create_buffer(
@@ -76,48 +93,72 @@ impl Example for LineRaster {
             UsageFlags::FAST_DEVICE_ACCESS,
         )?;
 
-        let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<RasterPC>() as _)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let fill_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/fill.comp",
-            &[push_constant_range],
-            &[state.texture_arena.storage_set_layout],
-        )?;
-        let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<RasterPC>() as _)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let raster_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/raster.comp",
-            &[push_constant_range],
-            &[state.texture_arena.storage_set_layout],
-        )?;
+        let fill_pass = {
+            let push_constant_range = vk::PushConstantRange::default()
+                .size(size_of::<RasterPC>() as _)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE);
 
-        let vertex_shader_desc = VertexShaderDesc {
-            shader_path: "shaders/screen_trig.vert".into(),
-            ..Default::default()
+            state.pipeline_arena.create_compute_pipeline(
+                "examples/line_raster/fill.comp",
+                &[push_constant_range],
+                &[state.texture_arena.storage_set_layout],
+            )?
         };
-        let fragment_shader_desc = FragmentShaderDesc {
-            shader_path: "examples/line_raster/resolve.frag".into(),
+
+        let raster_pass = {
+            let push_constant_range = vk::PushConstantRange::default()
+                .size(size_of::<RasterPC>() as _)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE);
+
+            state.pipeline_arena.create_compute_pipeline(
+                "examples/line_raster/raster.comp",
+                &[push_constant_range],
+                &[state.texture_arena.storage_set_layout],
+            )?
         };
-        let fragment_output_desc = FragmentOutputDesc {
-            surface_format: ctx.swapchain.format(),
-            ..Default::default()
+
+        let resolve_pass = {
+            let push_constant_range = vk::PushConstantRange::default()
+                .size(size_of::<ResolvePC>() as _)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE);
+
+            state.pipeline_arena.create_compute_pipeline(
+                "examples/line_raster/resolve.comp",
+                &[push_constant_range],
+                &[
+                    state.texture_arena.sampled_set_layout,
+                    state.texture_arena.storage_set_layout,
+                ],
+            )?
         };
-        let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<ResolvePC>() as _)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-        let resolve_pass = state.pipeline_arena.create_render_pipeline(
-            &VertexInputDesc::default(),
-            &vertex_shader_desc,
-            &fragment_shader_desc,
-            &fragment_output_desc,
-            &[push_constant_range],
-            &[
-                state.texture_arena.images_set_layout,
-                state.texture_arena.storage_set_layout,
-            ],
-        )?;
+
+        let postprocess_pass = {
+            let vertex_shader_desc = VertexShaderDesc {
+                shader_path: "shaders/screen_trig.vert".into(),
+                ..Default::default()
+            };
+            let fragment_shader_desc = FragmentShaderDesc {
+                shader_path: "examples/line_raster/postprocess.frag".into(),
+            };
+            let fragment_output_desc = FragmentOutputDesc {
+                surface_format: ctx.swapchain.format(),
+                ..Default::default()
+            };
+            let push_constant_range = vk::PushConstantRange::default()
+                .size(size_of::<PostprocessPC>() as _)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+            state.pipeline_arena.create_render_pipeline(
+                &VertexInputDesc::default(),
+                &vertex_shader_desc,
+                &fragment_shader_desc,
+                &fragment_output_desc,
+                &[push_constant_range],
+                &[
+                    state.texture_arena.sampled_set_layout,
+                    state.texture_arena.storage_set_layout,
+                ],
+            )?
+        };
 
         let mut accumulate_images = vec![];
         let extent = vk::Extent3D {
@@ -148,13 +189,53 @@ impl Example for LineRaster {
             device.name_object(image, &format!("Storage img: {i}"));
         }
 
+        // let bloom_pass = Bloom::new(ctx, state)?;
+
+        let hdr_target_info = vk::ImageCreateInfo::default()
+            .extent(vk::Extent3D {
+                width: ctx.swapchain.extent.width,
+                height: ctx.swapchain.extent.height,
+                depth: 1,
+            })
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::B10G11R11_UFLOAT_PACK32)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .mip_levels(1)
+            .array_layers(1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        let hdr_target = ManagedImage::new(
+            &ctx.device,
+            &hdr_target_info,
+            UsageFlags::FAST_DEVICE_ACCESS,
+        )?;
+        let hdr_target_view = ctx
+            .device
+            .create_2d_view(&hdr_target.image, hdr_target_info.format)?;
+        let hdr_target_sampled_idx =
+            state
+                .texture_arena
+                .push_sampled_image(hdr_target.image, hdr_target_view, None, None);
+        let hdr_target_storage_idx =
+            state
+                .texture_arena
+                .push_storage_image(hdr_target.image, hdr_target_view, None, None);
+
         Ok(Self {
             spawn_pass,
             lines_buffer,
             fill_pass,
             raster_pass,
             resolve_pass,
+            postprocess_pass,
             accumulate_images,
+            // bloom_pass,
+            hdr_target,
+            hdr_target_info,
+            hdr_target_view,
+            hdr_target_sampled_idx,
+            hdr_target_storage_idx,
         })
     }
 
@@ -201,6 +282,26 @@ impl Example for LineRaster {
         state
             .texture_arena
             .update_storage_images_by_idx(&self.accumulate_images)?;
+
+        // self.bloom_pass.resize(ctx, state)?;
+
+        self.hdr_target_info.extent.width = extent.width;
+        self.hdr_target_info.extent.height = extent.height;
+        self.hdr_target = ManagedImage::new(
+            &ctx.device,
+            &self.hdr_target_info,
+            UsageFlags::FAST_DEVICE_ACCESS,
+        )?;
+        unsafe { ctx.device.destroy_image_view(self.hdr_target_view, None) };
+        self.hdr_target_view = ctx
+            .device
+            .create_2d_view(&self.hdr_target.image, self.hdr_target_info.format)?;
+        state
+            .texture_arena
+            .update_sampled_image(self.hdr_target_sampled_idx, &self.hdr_target_view);
+        state
+            .texture_arena
+            .update_storage_image(self.hdr_target_storage_idx, &self.hdr_target_view);
         Ok(())
     }
 
@@ -210,9 +311,7 @@ impl Example for LineRaster {
         state: &mut AppState,
         frame: &mut FrameGuard,
     ) -> Result<()> {
-        let idx = frame.image_idx;
-
-        let raster_push_const = RasterPC {
+        let raster_push_constant = RasterPC {
             red_image: self.accumulate_images[0] as u32,
             green_image: self.accumulate_images[1] as u32,
             blue_image: self.accumulate_images[2] as u32,
@@ -220,68 +319,102 @@ impl Example for LineRaster {
             line_buffer: self.lines_buffer.address,
         };
 
-        let pipeline = state.pipeline_arena.get_pipeline(self.fill_pass);
-        frame.push_constant(
-            pipeline.layout,
-            vk::ShaderStageFlags::COMPUTE,
-            &[raster_push_const],
-        );
-        frame.bind_descriptor_sets(
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            &[state.texture_arena.storage_set],
-        );
-        frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
-        const SUBGROUP_SIZE: u32 = 16;
-        let extent = ctx.swapchain.extent();
-        frame.dispatch(
-            dispatch_optimal(extent.width, SUBGROUP_SIZE),
-            dispatch_optimal(extent.height, SUBGROUP_SIZE),
-            1,
-        );
+        {
+            let pipeline = state.pipeline_arena.get_pipeline(self.fill_pass);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                &[raster_push_constant],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                &[state.texture_arena.storage_set],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+            const SUBGROUP_SIZE: u32 = 16;
+            let extent = ctx.swapchain.extent();
+            frame.dispatch(
+                dispatch_optimal(extent.width, SUBGROUP_SIZE),
+                dispatch_optimal(extent.height, SUBGROUP_SIZE),
+                1,
+            );
+        }
 
-        let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
-        frame.push_constant(
-            pipeline.layout,
-            vk::ShaderStageFlags::COMPUTE,
-            &[raster_push_const],
-        );
-        frame.bind_descriptor_sets(
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            &[state.texture_arena.storage_set],
-        );
-        frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-        frame.dispatch(NUM_RAYS * NUM_BOUNCES, 1, 1);
+        {
+            let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                &[raster_push_constant],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                &[state.texture_arena.storage_set],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
+            frame.dispatch(NUM_RAYS * NUM_BOUNCES, 1, 1);
+        }
 
-        frame.begin_rendering(
-            ctx.swapchain.get_current_image_view(),
-            vk::AttachmentLoadOp::CLEAR,
-            [0., 0.025, 0.025, 1.0],
-        );
-        let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
-        frame.push_constant(
-            pipeline.layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            &[ResolvePC {
-                current_image: state.texture_arena.external_sampled_img_idx[idx as usize],
+        {
+            let resolve_push_constant = ResolvePC {
+                target_image: self.hdr_target_sampled_idx,
                 red_image: self.accumulate_images[0] as u32,
                 green_image: self.accumulate_images[1] as u32,
-                bluew_image: self.accumulate_images[2] as u32,
+                blue_image: self.accumulate_images[2] as u32,
                 camera_buffer: state.camera_uniform.address,
-            }],
-        );
-        frame.bind_descriptor_sets(
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline.layout,
-            &[
-                state.texture_arena.images_set,
-                state.texture_arena.storage_set,
-            ],
-        );
-        frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
-        frame.draw(3, 0, 1, 0);
-        frame.end_rendering();
+            };
+            let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                &[resolve_push_constant],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                &[
+                    state.texture_arena.sampled_set,
+                    state.texture_arena.storage_set,
+                ],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+            const SUBGROUP_SIZE: u32 = 16;
+            let extent = ctx.swapchain.extent();
+            frame.dispatch(
+                dispatch_optimal(extent.width, SUBGROUP_SIZE),
+                dispatch_optimal(extent.height, SUBGROUP_SIZE),
+                1,
+            );
+        }
+
+        {
+            frame.begin_rendering(
+                ctx.swapchain.get_current_image_view(),
+                vk::AttachmentLoadOp::CLEAR,
+                [0., 0.025, 0.025, 1.0],
+            );
+            let pipeline = state.pipeline_arena.get_pipeline(self.postprocess_pass);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                &[PostprocessPC {
+                    source_image: self.hdr_target_sampled_idx,
+                }],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.layout,
+                &[
+                    state.texture_arena.sampled_set,
+                    state.texture_arena.storage_set,
+                ],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
+            frame.draw(3, 0, 1, 0);
+            frame.end_rendering();
+        }
 
         Ok(())
     }

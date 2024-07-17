@@ -259,6 +259,7 @@ impl Instance {
             dynamic_rendering,
             dbg_utils,
         };
+
         let main_queue = unsafe { device.get_device_queue(main_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(transfer_queue_family_idx, 0) };
 

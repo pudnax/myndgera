@@ -17,9 +17,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main() {
     vec2 dims = imageSize(gtextures[pc.red_img]);
     vec2 pix = gl_GlobalInvocationID.xy;
-    if (pix.x >= dims.x || pix.y >= dims.y) {
-        return;
-    }
+    if (pix.x >= dims.x || pix.y >= dims.y) { return; }
 
     imageStore(gtextures[pc.red_img], ivec2(pix), uvec4(0));
     imageStore(gtextures[pc.green_img], ivec2(pix), uvec4(0));

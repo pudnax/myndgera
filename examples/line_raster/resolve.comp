@@ -1,0 +1,32 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_image_load_formatted : require
+
+layout(set = 0, binding = 0) uniform sampler gsamplers[];
+layout(set = 0, binding = 1) uniform texture2D gtextures[];
+layout(set = 1, binding = 0) uniform image2D gstorage_textures[];
+
+layout(std430, push_constant) uniform PushConstant {
+    uint target_img;
+    uint red_img;
+    uint green_img;
+    uint blue_img;
+}
+pc;
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+void main() {
+    vec2 dims = imageSize(gstorage_textures[pc.red_img]);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= dims.x || pix.y >= dims.y) { return; }
+
+    float red = imageLoad(gstorage_textures[pc.red_img], pix).x;
+    float green = imageLoad(gstorage_textures[pc.green_img], pix).x;
+    float blue = imageLoad(gstorage_textures[pc.blue_img], pix).x;
+
+    vec3 col = vec3(red, green, blue);
+    imageStore(gstorage_textures[pc.target_img], pix, vec4(col, 1.));
+}

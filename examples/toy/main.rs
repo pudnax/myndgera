@@ -38,13 +38,13 @@ impl Example for Toy {
             &fragment_shader_desc,
             &fragment_output_desc,
             &[push_constant_range],
-            &[state.texture_arena.images_set_layout],
+            &[state.texture_arena.sampled_set_layout],
         )?;
 
         let compute_pipeline = state.pipeline_arena.create_compute_pipeline(
             "examples/toy/shader.comp",
             &[push_constant_range],
-            &[state.texture_arena.images_set_layout],
+            &[state.texture_arena.sampled_set_layout],
         )?;
         Ok(Self {
             render_pipeline,
@@ -66,7 +66,7 @@ impl Example for Toy {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            &[state.texture_arena.images_set],
+            &[state.texture_arena.sampled_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
         const SUBGROUP_SIZE: u32 = 16;
@@ -106,7 +106,7 @@ impl Example for Toy {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout,
-            &[state.texture_arena.images_set],
+            &[state.texture_arena.sampled_set],
         );
         frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
 

@@ -113,8 +113,8 @@ pub struct TextureArena {
     pub memories: Vec<Option<MemoryBlock<DeviceMemory>>>,
     pub infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
     pub views: Vec<vk::ImageView>,
-    pub images_set: vk::DescriptorSet,
-    pub images_set_layout: vk::DescriptorSetLayout,
+    pub sampled_set: vk::DescriptorSet,
+    pub sampled_set_layout: vk::DescriptorSetLayout,
 
     pub storage_images: Vec<vk::Image>,
     pub storage_memory: Vec<Option<MemoryBlock<DeviceMemory>>>,
@@ -278,8 +278,8 @@ impl TextureArena {
             views: vec![],
             samplers,
             descriptor_pool,
-            images_set,
-            images_set_layout,
+            sampled_set: images_set,
+            sampled_set_layout: images_set_layout,
             storage_images: vec![],
             storage_views: vec![],
             storage_memory: vec![],
@@ -400,12 +400,16 @@ impl TextureArena {
             .image_view(view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.images_set)
+            .dst_set(self.sampled_set)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .dst_binding(IMAGE_SET)
             .image_info(std::slice::from_ref(&image_info))
             .dst_array_element(idx);
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+
+        if info.is_none() {
+            self.external_sampled_img_idx.push(idx);
+        }
 
         idx
     }
@@ -436,6 +440,10 @@ impl TextureArena {
             .image_info(std::slice::from_ref(&image_info))
             .dst_array_element(idx);
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+
+        if info.is_none() {
+            self.external_storage_img_idx.push(idx);
+        }
 
         idx
     }
@@ -496,7 +504,7 @@ impl TextureArena {
             .image_view(view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.images_set)
+            .dst_set(self.sampled_set)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .dst_binding(IMAGE_SET)
             .image_info(std::slice::from_ref(&image_info))
@@ -515,7 +523,7 @@ impl TextureArena {
             .image_view(*view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.images_set)
+            .dst_set(self.sampled_set)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .dst_binding(IMAGE_SET)
             .image_info(std::slice::from_ref(&image_info))
@@ -621,9 +629,9 @@ impl Drop for TextureArena {
                 .for_each(|&sampler| self.device.destroy_sampler(sampler, None));
             let _ = self
                 .device
-                .free_descriptor_sets(self.descriptor_pool, &[self.images_set, self.storage_set]);
+                .free_descriptor_sets(self.descriptor_pool, &[self.sampled_set, self.storage_set]);
             self.device
-                .destroy_descriptor_set_layout(self.images_set_layout, None);
+                .destroy_descriptor_set_layout(self.sampled_set_layout, None);
             self.device
                 .destroy_descriptor_set_layout(self.storage_set_layout, None);
             self.device

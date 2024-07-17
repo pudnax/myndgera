@@ -131,7 +131,8 @@ impl AppState {
         };
 
         let texture_arena = TextureArena::new(&ctx.device, &ctx.swapchain, &ctx.queue)?;
-        let camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
+        let mut camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
+        camera.aspect = extent.width as f32 / extent.height as f32;
         let camera_uniform = ctx.device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             UsageFlags::FAST_DEVICE_ACCESS,
