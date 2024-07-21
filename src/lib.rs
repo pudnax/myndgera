@@ -4,7 +4,6 @@
 mod camera;
 pub mod default_shaders;
 mod input;
-mod passes;
 mod recorder;
 mod shader_compiler;
 mod utils;
@@ -33,7 +32,6 @@ use winit::{
 pub use self::{
     camera::*,
     input::Input,
-    passes::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
     utils::*,
@@ -43,7 +41,10 @@ pub use self::{
 
 use anyhow::bail;
 use anyhow::Result;
-use ash::{khr, vk};
+use ash::{
+    khr::{self, surface},
+    vk,
+};
 
 pub const UPDATES_PER_SECOND: u32 = 60;
 pub const FIXED_TIME_STEP: f64 = 1. / UPDATES_PER_SECOND as f64;
@@ -382,7 +383,7 @@ impl<E: Example> AppInit<E> {
         }
 
         for i in SCREENSIZED_IMAGE_INDICES {
-            if let Some(info) = &mut self.state.texture_arena.infos[i] {
+            if let Some(info) = &mut self.state.texture_arena.sampled_infos[i] {
                 info.extent.width = extent.width;
                 info.extent.height = extent.height;
             }
@@ -559,7 +560,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     self.render.swapchain.get_current_image(),
                     self.render.swapchain.extent(),
                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    &self.state.texture_arena.images[PREV_FRAME_IDX],
+                    &self.state.texture_arena.sampled_images[PREV_FRAME_IDX],
                     self.render.swapchain.extent(),
                     vk::ImageLayout::UNDEFINED,
                 );

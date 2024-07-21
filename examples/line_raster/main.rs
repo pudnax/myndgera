@@ -114,7 +114,7 @@ impl Example for LineRaster {
             &fragment_output_desc,
             &[push_constant_range],
             &[
-                state.texture_arena.images_set_layout,
+                state.texture_arena.sampled_set_layout,
                 state.texture_arena.storage_set_layout,
             ],
         )?;
@@ -139,7 +139,7 @@ impl Example for LineRaster {
             let (image, memory) = ctx
                 .device
                 .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
-            let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT)?;
+            let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT, 0)?;
             let idx = state
                 .texture_arena
                 .push_storage_image(image, view, Some(memory), Some(info));
@@ -275,7 +275,7 @@ impl Example for LineRaster {
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout,
             &[
-                state.texture_arena.images_set,
+                state.texture_arena.sampled_set,
                 state.texture_arena.storage_set,
             ],
         );

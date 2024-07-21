@@ -107,7 +107,12 @@ impl Device {
         self.dealloc_memory(memory);
     }
 
-    pub fn create_2d_view(&self, image: &vk::Image, format: vk::Format) -> VkResult<vk::ImageView> {
+    pub fn create_2d_view(
+        &self,
+        image: &vk::Image,
+        format: vk::Format,
+        base_mip_level: u32,
+    ) -> VkResult<vk::ImageView> {
         let view = unsafe {
             self.create_image_view(
                 &vk::ImageViewCreateInfo::default()
@@ -117,10 +122,10 @@ impl Device {
                     .subresource_range(
                         vk::ImageSubresourceRange::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
+                            .base_mip_level(base_mip_level)
+                            .level_count(vk::REMAINING_MIP_LEVELS)
                             .base_array_layer(0)
-                            .layer_count(1),
+                            .layer_count(vk::REMAINING_ARRAY_LAYERS),
                     ),
                 None,
             )?
