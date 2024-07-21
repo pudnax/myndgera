@@ -41,10 +41,7 @@ pub use self::{
 
 use anyhow::bail;
 use anyhow::Result;
-use ash::{
-    khr::{self, surface},
-    vk,
-};
+use ash::{khr, vk};
 
 pub const UPDATES_PER_SECOND: u32 = 60;
 pub const FIXED_TIME_STEP: f64 = 1. / UPDATES_PER_SECOND as f64;
@@ -132,7 +129,8 @@ impl AppState {
         };
 
         let texture_arena = TextureArena::new(&ctx.device, &ctx.swapchain, &ctx.queue)?;
-        let camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
+        let mut camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
+        camera.aspect = ctx.swapchain.extent.width as f32 / ctx.swapchain.extent.height as f32;
         let camera_uniform = ctx.device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             UsageFlags::FAST_DEVICE_ACCESS,

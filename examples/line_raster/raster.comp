@@ -2,24 +2,37 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_samplerless_texture_functions : require
 
 #include "./shared.glsl"
 #include <camera.glsl>
+#include <textures.glsl>
 
-layout(set = 0, binding = 0, r32ui) uniform coherent
-    restrict uimage2D gtextures[];
+layout(set = 0, binding = 0) uniform sampler gsamplers[];
+layout(set = 0, binding = 1) uniform texture2D gtextures[];
+layout(set = 1, binding = 0, r32ui) uniform coherent
+    restrict uimage2D gstorage[];
 
-layout(std430, push_constant) uniform PushConstant {
+layout(scalar, push_constant) uniform PushConstant {
     uint red_img;
     uint green_img;
     uint blue_img;
+    vec2 noise_offset;
     CameraBuf camera;
     Rays rays_ptr;
 }
 pc;
 
-vec4 project(vec3 pos) {
-    vec4 screen_pos = pc.camera.cam.world_to_clip * vec4(pos, 1.);
+vec4 read_blue_noise(ivec2 loc) {
+    vec2 tex_size = vec2(1024);
+    ivec2 offset = ivec2(pc.noise_offset * tex_size);
+    ivec2 wrappedloc = (loc + offset) % ivec2(tex_size);
+    vec4 sampleValue = texelFetch(gtextures[BLUE_TEX], wrappedloc, 0);
+    return sampleValue;
+}
+
+vec4 project(mat4 world_to_clip, vec3 pos) {
+    vec4 screen_pos = world_to_clip * vec4(pos, 1.);
     screen_pos.xyz /= screen_pos.w;
     return screen_pos;
 }
@@ -33,10 +46,6 @@ bool in_clip_space(vec4 pos) {
              pos.y > 1.0);
 }
 
-vec2 get_uv_comp(uvec3 global_id, vec2 tex_size) {
-    return (vec2(global_id) + 0.5) / vec2(tex_size);
-}
-
 vec2 ndc_to_raster(vec4 ndc, vec2 dims) {
     vec2 res = (ndc.xy * 0.5 + 0.5);
     res.y = 1. - res.y;
@@ -46,7 +55,7 @@ vec2 ndc_to_raster(vec4 ndc, vec2 dims) {
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
-    uvec2 dims = imageSize(gtextures[pc.red_img]);
+    uvec2 dims = imageSize(gstorage[pc.red_img]);
 
     uint idx = gl_GlobalInvocationID.x;
     if (idx > pc.rays_ptr.len) { return; }
@@ -56,8 +65,8 @@ void main() {
     vec3 gray_end = ray.end.xyz;
     if (gray_start == vec3(0) && gray_end == vec3(0.)) { return; }
 
-    vec4 cray_start = project(gray_start);
-    vec4 cray_end = project(gray_end);
+    vec4 cray_start = project(pc.camera.cam.world_to_clip, gray_start);
+    vec4 cray_end = project(pc.camera.cam.world_to_clip, gray_end);
 
     if (!in_clip_space(cray_start) && !in_clip_space(cray_end)) { return; }
 
@@ -65,24 +74,26 @@ void main() {
     vec2 ray_end = ndc_to_raster(cray_end, dims);
 
     vec2 ray_dir = ray_end - ray_start;
-    float ray_len_squared = dot(ray_dir, ray_dir);
-    ray_dir /= sqrt(ray_len_squared);
+    float ray_len = length(ray_dir);
+    ray_dir /= ray_len;
+
+    vec4 blue_noise = read_blue_noise(ivec2(idx, 0));
 
     vec2 start = ray_start;
     vec2 dir = ray_dir;
-    float rlength = sqrt(ray_len_squared);
-    float n = 250.;
-    float step = rlength / n;
-    step = max(step, sqrt(2.));
-    for (float s = 0; s < rlength; s += step) {
+    float n = 50.;
+    float step = ray_len / n;
+    step = step + (blue_noise.x * 2. - 1.) * step / 2.;
+    step = max(step, sqrt(1.));
+    for (float s = 0; s < ray_len; s += step) {
         vec2 p = start + dir * s;
-        ivec2 pix = ivec2(p + 0.);
+        ivec2 pix = ivec2(p + blue_noise.yz * 2.);
         vec3 col = ray.color.rgb * ray.color.w;
-        uvec3 ucol = uvec3(floor(col * 25.));
+        uvec3 ucol = uvec3(floor(col * 1000.));
         // if (!in_bounds(pix, dims)) { continue; }
-        imageAtomicAdd(gtextures[pc.red_img], pix, ucol.r);
-        imageAtomicAdd(gtextures[pc.green_img], pix, ucol.g);
-        imageAtomicAdd(gtextures[pc.blue_img], pix, ucol.b);
+        imageAtomicAdd(gstorage[pc.red_img], pix, ucol.r);
+        imageAtomicAdd(gstorage[pc.green_img], pix, ucol.g);
+        imageAtomicAdd(gstorage[pc.blue_img], pix, ucol.b);
     }
 }
 
@@ -104,8 +115,8 @@ void dda(vec2 ray_start, vec2 ray_dir, float ray_len_squared, vec2 dims) {
         map_pos += ivec2(vec2(mask)) * ray_step;
         if (!in_bounds(map_pos, dims)) { continue; }
 
-        imageAtomicAdd(gtextures[pc.red_img], map_pos.xy, 200u);
-        imageAtomicAdd(gtextures[pc.green_img], map_pos.xy, 10u);
-        imageAtomicAdd(gtextures[pc.blue_img], map_pos.xy, 25u);
+        imageAtomicAdd(gstorage[pc.red_img], map_pos.xy, 200u);
+        imageAtomicAdd(gstorage[pc.green_img], map_pos.xy, 10u);
+        imageAtomicAdd(gstorage[pc.blue_img], map_pos.xy, 25u);
     }
 }

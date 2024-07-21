@@ -557,9 +557,7 @@ impl TextureArena {
             let (image, memory) = self
                 .device
                 .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
-            let view = self
-                .device
-                .create_2d_view(&image, info.format, info.mip_levels)?;
+            let view = self.device.create_2d_view(&image, info.format, 0)?;
 
             self.update_sampled_image(i as u32, &view);
 
