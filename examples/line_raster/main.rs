@@ -6,6 +6,8 @@ use glam::{vec3, Vec2, Vec3, Vec4};
 use gpu_alloc::UsageFlags;
 use myndgera::*;
 
+use self::bloom::{Bloom, BloomParams};
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct Ray {
@@ -68,6 +70,7 @@ struct LineRaster {
     hdr_target_view: vk::ImageView,
     hdr_sampled_idx: u32,
     hdr_storage_idx: u32,
+    bloom: Bloom,
     device: Arc<Device>,
 }
 
@@ -214,6 +217,9 @@ impl Example for LineRaster {
             state
                 .texture_arena
                 .push_storage_image(hdr_target.image, hdr_target_view, None, None);
+        ctx.device.name_object(hdr_target.image, "Hdr Target");
+
+        let bloom = Bloom::new(ctx, state)?;
 
         Ok(Self {
             spawn_pass,
@@ -228,6 +234,7 @@ impl Example for LineRaster {
             hdr_target_view,
             hdr_sampled_idx,
             hdr_storage_idx,
+            bloom,
             device: ctx.device.clone(),
         })
     }
@@ -258,7 +265,8 @@ impl Example for LineRaster {
             );
             ctx.device
                 .cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
-            ctx.device.cmd_dispatch(cbuff, NUM_RAYS, 1, 1);
+            ctx.device
+                .cmd_dispatch(cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
         }
 
         Ok(())
@@ -282,12 +290,15 @@ impl Example for LineRaster {
             &self.hdr_target_info,
             UsageFlags::FAST_DEVICE_ACCESS,
         )?;
+        ctx.device.name_object(self.hdr_target.image, "Hdr Target");
         unsafe { self.device.destroy_image_view(self.hdr_target_view, None) };
         self.hdr_target_view =
             ctx.device
                 .create_2d_view(&self.hdr_target.image, self.hdr_target_info.format, 0)?;
         texture_arena.update_sampled_image(self.hdr_sampled_idx, &self.hdr_target_view);
         texture_arena.update_storage_image(self.hdr_storage_idx, &self.hdr_target_view);
+
+        self.bloom.resize(ctx, state)?;
         Ok(())
     }
 
@@ -346,7 +357,7 @@ impl Example for LineRaster {
                 ],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-            frame.dispatch(NUM_RAYS * NUM_BOUNCES, 1, 1);
+            frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 256), 1, 1);
         }
 
         {
@@ -385,6 +396,20 @@ impl Example for LineRaster {
                 1,
             );
         }
+
+        self.bloom.apply(
+            ctx,
+            state,
+            frame,
+            BloomParams {
+                target_image: &self.hdr_target.image,
+                target_image_sampled: self.hdr_sampled_idx,
+                target_image_storage: self.hdr_storage_idx,
+                target_current_layout: vk::ImageLayout::GENERAL,
+                strength: 1. / 16.,
+                width: 1.,
+            },
+        );
 
         {
             frame.begin_rendering(

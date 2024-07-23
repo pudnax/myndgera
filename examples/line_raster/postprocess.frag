@@ -31,6 +31,15 @@ layout(std430, push_constant) uniform PushConstant {
 }
 pc;
 
+vec3 linear_to_nonlinear_srgb(vec3 linear_color) {
+    bvec3 cutoff = lessThan(linear_color, vec3(0.0031308));
+    vec3 higher =
+        vec3(1.055) * pow(linear_color, vec3(1.0 / 2.4)) - vec3(0.055);
+    vec3 lower = linear_color * vec3(12.92);
+
+    return mix(higher, lower, cutoff);
+}
+
 vec3 aces_tonemap(vec3 color) {
     mat3 m1 = mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383,
                    0.04823, 0.01566, 0.83777);
@@ -52,7 +61,7 @@ void main() {
     col += imageLoad(gstorage[pc.hdr_storage], pix).rgb;
 
     col = aces_tonemap(col);
-    col = pow(col, vec3(0.4545));
+    col = linear_to_nonlinear_srgb(col);
 
     out_color = vec4(col, 1.0);
 }

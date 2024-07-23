@@ -38,7 +38,7 @@ mat2 rot(float a) {
     return mat2(c, -s, s, c);
 }
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -63,7 +63,7 @@ void main() {
 
         dir = reflect(dir, nor);
         vec3 end = pos + nor * 0.01;
-        float throughput = 1. - float(i ) / float(pc.num_bounces);
+        float throughput = 1. - float(i) / float(pc.num_bounces);
         Ray ray = Ray(vec4(col, throughput), vec3(origin), vec3(end));
         pc.rays_ptr.rays[ray_idx + i] = ray;
 

@@ -50,6 +50,34 @@ impl Device {
         };
     }
 
+    pub fn begin_debug_marker(&self, &cbuff: &vk::CommandBuffer, label: &str) {
+        let label = CString::new(label).unwrap_or_default();
+        let label = vk::DebugUtilsLabelEXT::default().label_name(&label);
+        unsafe {
+            self.dbg_utils.cmd_begin_debug_utils_label(cbuff, &label);
+        }
+    }
+    pub fn end_debug_marker(&self, &cbuff: &vk::CommandBuffer) {
+        unsafe { self.dbg_utils.cmd_end_debug_utils_label(cbuff) }
+    }
+    pub fn create_scoped_marker<'buff>(
+        self: &Arc<Self>,
+        command_buffer: &'buff vk::CommandBuffer,
+        label: &str,
+    ) -> ScopedMarker<'buff> {
+        let label = CString::new(label).unwrap_or_default();
+        let label = vk::DebugUtilsLabelEXT::default().label_name(&label);
+        unsafe {
+            self.dbg_utils
+                .cmd_begin_debug_utils_label(*command_buffer, &label);
+        }
+
+        ScopedMarker {
+            command_buffer,
+            device: Arc::clone(&self),
+        }
+    }
+
     pub fn create_image(
         &self,
         info: &vk::ImageCreateInfo,
@@ -541,6 +569,21 @@ impl std::fmt::Display for RendererInfo {
         writeln!(f, "Device name: {}", self.device_name)?;
         writeln!(f, "Device type: {}", self.device_type)?;
         Ok(())
+    }
+}
+
+pub struct ScopedMarker<'a> {
+    command_buffer: &'a vk::CommandBuffer,
+    device: Arc<Device>,
+}
+
+impl Drop for ScopedMarker<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .dbg_utils
+                .cmd_end_debug_utils_label(*self.command_buffer)
+        };
     }
 }
 

@@ -52,7 +52,7 @@ vec2 ndc_to_raster(vec4 ndc, vec2 dims) {
     return res * dims;
 }
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
     uvec2 dims = imageSize(gstorage[pc.red_img]);
@@ -87,7 +87,7 @@ void main() {
     step = max(step, sqrt(1.));
     for (float s = 0; s < ray_len; s += step) {
         vec2 p = start + dir * s;
-        ivec2 pix = ivec2(p + blue_noise.yz * 2.);
+        ivec2 pix = ivec2(p + blue_noise.yz * 1.);
         vec3 col = ray.color.rgb * ray.color.w;
         uvec3 ucol = uvec3(floor(col * 1000.));
         // if (!in_bounds(pix, dims)) { continue; }

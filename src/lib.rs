@@ -4,6 +4,7 @@
 mod camera;
 pub mod default_shaders;
 mod input;
+mod passes;
 mod recorder;
 mod shader_compiler;
 mod utils;
@@ -32,6 +33,7 @@ use winit::{
 pub use self::{
     camera::*,
     input::Input,
+    passes::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
     utils::*,
@@ -344,9 +346,12 @@ impl<E: Example> AppInit<E> {
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
             self.device
-                .one_time_submit(&self.render.queue, |_, cbuff| {
+                .one_time_submit(&self.render.queue, |device, cbuff| {
+                    let _marker = device.create_scoped_marker(&cbuff, "State Update");
+
                     state.update(&self.render, &cbuff)?;
                     self.example.update(&self.render, state, &cbuff)?;
+
                     Ok(())
                 })?;
 
@@ -546,6 +551,9 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     Err(e) => panic!("error: {e}\n"),
                 };
 
+                self.device
+                    .begin_debug_marker(frame.command_buffer(), "Rendering");
+
                 {
                     let _ = self
                         .example
@@ -562,6 +570,8 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     self.render.swapchain.extent(),
                     vk::ImageLayout::UNDEFINED,
                 );
+
+                self.device.end_debug_marker(frame.command_buffer());
 
                 match self
                     .render
