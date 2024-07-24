@@ -52,6 +52,58 @@ vec2 ndc_to_raster(vec4 ndc, vec2 dims) {
     return res * dims;
 }
 
+void draw_point(ivec2 pix, vec3 col) {
+    uvec3 ucol = uvec3(floor(col * RAY_COLOR_RANGE));
+    imageAtomicAdd(gstorage[pc.red_img], pix, ucol.r);
+    imageAtomicAdd(gstorage[pc.green_img], pix, ucol.g);
+    imageAtomicAdd(gstorage[pc.blue_img], pix, ucol.b);
+}
+
+void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
+    vec2 ray_dir = ray_end - ray_start;
+    float ray_len = length(ray_dir);
+    ray_dir /= ray_len;
+
+    float n = 500.;
+    float step = ray_len / n;
+    // step = step + (blue_noise.x * 2. - 1.) * step / 2.;
+    step = max(step, sqrt(1.));
+    for (float s = 0; s < ray_len; s += step) {
+        vec2 p = ray_start + ray_dir * s;
+        ivec2 pix = ivec2(p);
+        vec3 col = ray.color.rgb * ray.color.w;
+        if (!in_bounds(pix, dims)) { continue; }
+        draw_point(pix, col);
+    }
+}
+
+void dda(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
+    vec2 ray_dir = ray_end - ray_start;
+    float ray_len_squared = dot(ray_dir, ray_dir);
+    ray_dir /= ray_len_squared * ray_len_squared;
+
+    ivec2 map_pos = ivec2(floor(ray_start + 0.5));
+
+    vec2 delta_dist = 1.0 / abs(ray_dir);
+    ivec2 ray_step = ivec2(sign(ray_dir));
+    vec2 side_dist = (sign(ray_dir) * (vec2(map_pos) - ray_start) +
+                      (sign(ray_dir) * 0.5) + 0.5) *
+                     delta_dist;
+
+    for (int i = 0; i < 2500; i++) {
+        vec2 len = ray_start - map_pos;
+        if (dot(len, len) > ray_len_squared) { break; }
+
+        bvec2 mask = lessThanEqual(side_dist.xy, side_dist.yx);
+        side_dist += vec2(mask) * delta_dist;
+        map_pos += ivec2(vec2(mask)) * ray_step;
+        if (!in_bounds(map_pos, dims)) { continue; }
+
+        vec3 col = ray.color.rgb * ray.color.w;
+        draw_point(map_pos, col);
+    }
+}
+
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
@@ -73,50 +125,8 @@ void main() {
     vec2 ray_start = ndc_to_raster(cray_start, dims);
     vec2 ray_end = ndc_to_raster(cray_end, dims);
 
-    vec2 ray_dir = ray_end - ray_start;
-    float ray_len = length(ray_dir);
-    ray_dir /= ray_len;
-
     vec4 blue_noise = read_blue_noise(ivec2(idx, 0));
 
-    vec2 start = ray_start;
-    vec2 dir = ray_dir;
-    float n = 50.;
-    float step = ray_len / n;
-    step = step + (blue_noise.x * 2. - 1.) * step / 2.;
-    step = max(step, sqrt(1.));
-    for (float s = 0; s < ray_len; s += step) {
-        vec2 p = start + dir * s;
-        ivec2 pix = ivec2(p + blue_noise.yz * 1.);
-        vec3 col = ray.color.rgb * ray.color.w;
-        uvec3 ucol = uvec3(floor(col * 1000.));
-        // if (!in_bounds(pix, dims)) { continue; }
-        imageAtomicAdd(gstorage[pc.red_img], pix, ucol.r);
-        imageAtomicAdd(gstorage[pc.green_img], pix, ucol.g);
-        imageAtomicAdd(gstorage[pc.blue_img], pix, ucol.b);
-    }
-}
-
-void dda(vec2 ray_start, vec2 ray_dir, float ray_len_squared, vec2 dims) {
-    ivec2 map_pos = ivec2(floor(ray_start + 0.));
-
-    vec2 delta_dist = 1.0 / abs(ray_dir);
-    ivec2 ray_step = ivec2(sign(ray_dir));
-    vec2 side_dist = (sign(ray_dir) * (vec2(map_pos) - ray_start) +
-                      (sign(ray_dir) * 0.5) + 0.5) *
-                     delta_dist;
-
-    for (int i = 0; i < 2500; i++) {
-        vec2 len = ray_start - map_pos;
-        if (dot(len, len) > ray_len_squared) { break; }
-
-        bvec2 mask = lessThanEqual(side_dist.xy, side_dist.yx);
-        side_dist += vec2(mask) * delta_dist;
-        map_pos += ivec2(vec2(mask)) * ray_step;
-        if (!in_bounds(map_pos, dims)) { continue; }
-
-        imageAtomicAdd(gstorage[pc.red_img], map_pos.xy, 200u);
-        imageAtomicAdd(gstorage[pc.green_img], map_pos.xy, 10u);
-        imageAtomicAdd(gstorage[pc.blue_img], map_pos.xy, 25u);
-    }
+    // naive(ray_start, ray_end, ray, vec2(dims));
+    dda(ray_start, ray_end, ray, vec2(dims));
 }

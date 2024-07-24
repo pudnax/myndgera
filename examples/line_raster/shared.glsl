@@ -1,4 +1,5 @@
 const float goldenAngle = 2.3999632297286533;
+const float RAY_COLOR_RANGE = 2500.;
 
 struct Ray {
     vec4 color;

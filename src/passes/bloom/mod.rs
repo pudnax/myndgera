@@ -71,7 +71,7 @@ impl Drop for Bloom {
 
 impl Bloom {
     pub fn new(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
-        let miplevel_count = 8;
+        let miplevel_count = 6;
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .size(mem::size_of::<DownsamplePC>() as u32);
@@ -190,7 +190,7 @@ impl Bloom {
     ) {
         let _marker = self
             .device
-            .create_scoped_marker(frame.command_buffer(), "Bloom Scoped");
+            .create_scoped_marker(frame.command_buffer(), "Bloom Pass");
         let screen_extent = ctx.swapchain.extent;
         let source_image = params.target_image;
 

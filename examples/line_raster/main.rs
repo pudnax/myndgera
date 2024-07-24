@@ -406,8 +406,8 @@ impl Example for LineRaster {
                 target_image_sampled: self.hdr_sampled_idx,
                 target_image_storage: self.hdr_storage_idx,
                 target_current_layout: vk::ImageLayout::GENERAL,
-                strength: 1. / 16.,
-                width: 1.,
+                strength: 4. / 16.,
+                width: 2.,
             },
         );
 

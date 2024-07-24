@@ -45,24 +45,24 @@ vec3 get_norm(vec3 p, float s) {
 
 vec3 wire_trace(vec3 eye, vec3 dir) {
     vec3 wire_color = vec3(1., 0., 1.);
-    vec3 col = vec3(0.);
+    float wire = 0.;
     float s = 1.;
     float t = 0.;
     for (int i = 0; i < 200; i++) {
         vec3 pos = eye + dir * t;
         float d = sdf_model(pos);
         if (abs(d) < 0.001) {
-            float edge = 0.0015 * t * clamp(800. / RESOLUTION.x, 1., 2.5);
+            float edge = 0.0015 * clamp(800. / RESOLUTION.x, 1., 2.5);
             float edge_amount =
-                length(get_norm(pos, 0.03) - get_norm(pos, edge));
-            col += wire_color * smoothstep(0.0, .10, edge_amount) * 0.5;
+                length(get_norm(pos, 0.05) - get_norm(pos, edge));
+            wire += smoothstep(0.0, .10, edge_amount) * 0.5;
             s *= -1.;
-            d = 0.03 * s;
+            d = 0.025 * s;
         }
-        t += d * s;
+        t += d * s; // * 0.85;
         if (t > 500.) { break; }
     }
-    return max(col, vec3(0.));
+    return clamp(wire * wire_color, 0.0, 1.0);
 }
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -87,7 +87,7 @@ void main() {
     float red = imageLoad(gstorage_read[pc.red_img], ipix).x;
     float green = imageLoad(gstorage_read[pc.green_img], ipix).x;
     float blue = imageLoad(gstorage_read[pc.blue_img], ipix).x;
-    col += vec3(red, green, blue) / 1000.;
+    col += vec3(red, green, blue) / RAY_COLOR_RANGE;
 
     imageStore(gstorage_write[pc.target_img], ipix, vec4(col, 1.));
 }
