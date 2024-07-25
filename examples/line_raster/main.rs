@@ -38,7 +38,7 @@ struct RasterPC {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct ResolveCompPC {
+struct ResolvePC {
     target_image: u32,
     red_image: u32,
     green_image: u32,
@@ -60,9 +60,9 @@ const NUM_RAYS: u32 = 150;
 struct LineRaster {
     lines_buffer: Buffer,
     spawn_pass: ComputeHandle,
-    fill_pass: ComputeHandle,
+    clear_pass: ComputeHandle,
     raster_pass: ComputeHandle,
-    resolve_comp: ComputeHandle,
+    resolve_pass: ComputeHandle,
     postprocess_pass: RenderHandle,
     accumulate_images: Vec<usize>,
     hdr_target: ManagedImage,
@@ -104,8 +104,8 @@ impl Example for LineRaster {
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let fill_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/fill.comp",
+        let clear_pass = state.pipeline_arena.create_compute_pipeline(
+            "examples/line_raster/clear.comp",
             &[push_constant_range],
             &[state.texture_arena.storage_set_layout],
         )?;
@@ -122,9 +122,9 @@ impl Example for LineRaster {
         )?;
 
         let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<ResolveCompPC>() as _)
+            .size(size_of::<ResolvePC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
-        let resolve_comp = state.pipeline_arena.create_compute_pipeline(
+        let resolve_pass = state.pipeline_arena.create_compute_pipeline(
             "examples/line_raster/resolve.comp",
             &[push_constant_range],
             &[
@@ -224,9 +224,9 @@ impl Example for LineRaster {
         Ok(Self {
             spawn_pass,
             lines_buffer,
-            fill_pass,
+            clear_pass,
             raster_pass,
-            resolve_comp,
+            resolve_pass,
             postprocess_pass,
             accumulate_images,
             hdr_target,
@@ -320,7 +320,7 @@ impl Example for LineRaster {
         };
 
         {
-            let pipeline = state.pipeline_arena.get_pipeline(self.fill_pass);
+            let pipeline = state.pipeline_arena.get_pipeline(self.clear_pass);
             frame.push_constant(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
@@ -367,11 +367,11 @@ impl Example for LineRaster {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::GENERAL,
             );
-            let pipeline = state.pipeline_arena.get_pipeline(self.resolve_comp);
+            let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
             frame.push_constant(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
-                &[ResolveCompPC {
+                &[ResolvePC {
                     target_image: self.hdr_storage_idx,
                     red_image: self.accumulate_images[0] as u32,
                     green_image: self.accumulate_images[1] as u32,

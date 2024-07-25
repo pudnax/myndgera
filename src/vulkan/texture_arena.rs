@@ -523,6 +523,7 @@ impl TextureArena {
         Ok(idx)
     }
 
+    // WARN: Update images too
     pub fn update_sampled_image(&self, idx: u32, view: &vk::ImageView) {
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(*view)
