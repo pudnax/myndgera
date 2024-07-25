@@ -38,7 +38,7 @@ ddsfile = "0.5.2"
 log = "0.4.22"
 pretty-type-name = "1.0.1"
 glam = { version = "0.28.0", features = ["bytemuck", "mint", "rand"] }
-dolly = "0.5"
+dolly = "0.6"
 rand = "0.8"
 
 [profile.deploy]

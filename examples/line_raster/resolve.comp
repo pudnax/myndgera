@@ -82,7 +82,7 @@ void main() {
     vec3 dir = normalize(view_dir.xyz);
 
     vec3 col = vec3(0.);
-    col += wire_trace(eye, dir);
+    // col += wire_trace(eye, dir) * 0.25;
 
     float red = imageLoad(gstorage_read[pc.red_img], ipix).x;
     float green = imageLoad(gstorage_read[pc.green_img], ipix).x;

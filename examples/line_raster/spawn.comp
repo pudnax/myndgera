@@ -50,10 +50,11 @@ void main() {
     vec3 col = hash13(float(ray_idx)) * 0.5;
 
     vec3 origin = vec3(0., -1.5, -0.5);
-    vec3 dir = rand_cone_direction(float(idx) / float(pc.num_rays), 3.,
+    vec3 dir = rand_cone_direction(float(idx) / float(pc.num_rays), 6.,
                                    int(pc.num_rays));
-    dir.yz *= rot(-0.35);
-    dir.xz *= rot(-0.25 + pc.time);
+
+    dir.yz *= rot(-0.35 + pc.time);
+    dir.xz *= rot(-0.25);
 
     for (int i = 0; i < pc.num_bounces; ++i) {
         vec2 hit = trace(origin, dir);

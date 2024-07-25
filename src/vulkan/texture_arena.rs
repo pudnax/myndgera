@@ -299,7 +299,7 @@ impl TextureArena {
                 depth: 1,
             })
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
+            .format(vk::Format::R8G8B8A8_UNORM)
             .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
             .samples(vk::SampleCountFlags::TYPE_1)
             .mip_levels(1)

@@ -17,11 +17,34 @@ float sd_box(vec3 p, vec3 h) {
     return length(max(p, 0.)) + min(0., max(p.x, max(p.y, p.z)));
 }
 
+#define ITERS 5
+#define SCALE 3.
+#define MR2 0.25
+vec4 scalevec = vec4(SCALE, SCALE, SCALE, abs(SCALE)) / MR2;
+float C1 = abs(SCALE - 1.0), C2 = pow(abs(SCALE), float(1 - ITERS));
+
+float mandelbox(vec3 position) {
+    vec4 p = vec4(position.xyz, 1.0),
+         p0 = vec4(position.xyz, 1.0); // p.w is knighty's DEfactor
+    for (int i = 0; i < ITERS; i++) {
+        p.xyz =
+            clamp(p.xyz, -1.0, 1.0) * 2.0 - p.xyz; // box fold: min3, max3, mad3
+        float r2 = dot(p.xyz, p.xyz);              // dp3
+        p.xyzw *= clamp(max(MR2 / r2, MR2), 0.0,
+                        1.0);       // sphere fold: div1, max1.sat, mul4
+        p.xyzw = p * scalevec + p0; // mad4
+    }
+    return (length(p.xyz) - C1) / p.w - C2;
+}
+
 float sdf_model(vec3 p) {
     float width = 2.5;
-    float box = sd_box(p, vec3(width));
-    box = abs(box) - 0.01;
-    return box;
+    float d = sd_box(p, vec3(width));
+    d = length(p) - width;
+    d = mandelbox(p);
+    // d = abs(d) - 0.01;
+
+    return d;
 }
 
 vec3 get_norm(vec3 p) {

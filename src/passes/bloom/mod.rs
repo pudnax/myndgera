@@ -196,7 +196,7 @@ impl Bloom {
 
         ctx.device.image_transition(
             frame.command_buffer(),
-            &source_image,
+            source_image,
             params.target_current_layout,
             vk::ImageLayout::GENERAL,
         );
@@ -330,7 +330,7 @@ impl Bloom {
         }
         ctx.device.image_transition(
             frame.command_buffer(),
-            &source_image,
+            source_image,
             vk::ImageLayout::GENERAL,
             params.target_current_layout,
         );

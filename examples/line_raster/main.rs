@@ -341,6 +341,16 @@ impl Example for LineRaster {
             );
         }
 
+        unsafe {
+            let mem_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
+            self.device.cmd_pipeline_barrier2(
+                *frame.command_buffer(),
+                &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
+            )
+        };
+
         {
             let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
             frame.push_constant(
@@ -359,6 +369,16 @@ impl Example for LineRaster {
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
             frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 256), 1, 1);
         }
+
+        unsafe {
+            let mem_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
+            self.device.cmd_pipeline_barrier2(
+                *frame.command_buffer(),
+                &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
+            )
+        };
 
         {
             self.device.image_transition(

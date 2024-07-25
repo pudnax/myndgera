@@ -158,7 +158,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                 create_folder(VIDEO_FOLDER).unwrap();
                 let dir_path = Path::new(VIDEO_FOLDER);
                 let filename = dir_path.join(format!(
-                    "record-{}.mp4",
+                    "recordind-{}.mp4",
                     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
                 ));
                 recorder =

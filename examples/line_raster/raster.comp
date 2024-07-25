@@ -127,6 +127,6 @@ void main() {
 
     vec4 blue_noise = read_blue_noise(ivec2(idx, 0));
 
-    // naive(ray_start, ray_end, ray, vec2(dims));
-    dda(ray_start, ray_end, ray, vec2(dims));
+    naive(ray_start, ray_end, ray, vec2(dims));
+    // dda(ray_start, ray_end, ray, vec2(dims));
 }

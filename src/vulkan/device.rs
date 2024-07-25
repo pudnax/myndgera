@@ -74,7 +74,7 @@ impl Device {
 
         ScopedMarker {
             command_buffer,
-            device: Arc::clone(&self),
+            device: Arc::clone(self),
         }
     }
 
@@ -278,7 +278,7 @@ impl Device {
             vk::Offset3D {
                 x: src_extent.width as _,
                 y: src_extent.height as _,
-                z: 1,
+                z: 0,
             },
         ];
         let dst_offsets = [
@@ -286,7 +286,7 @@ impl Device {
             vk::Offset3D {
                 x: dst_extent.width as _,
                 y: dst_extent.height as _,
-                z: 1,
+                z: 0,
             },
         ];
         let subresource_layer = vk::ImageSubresourceLayers {
@@ -306,7 +306,7 @@ impl Device {
             .dst_image(*dst_image)
             .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .regions(&regions)
-            .filter(vk::Filter::NEAREST);
+            .filter(vk::Filter::LINEAR);
         unsafe { self.cmd_blit_image2(*command_buffer, &blit_info) };
 
         self.image_transition(
@@ -342,7 +342,7 @@ impl Device {
                     depth: 1,
                 })
                 .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(vk::Format::R8G8B8A8_UNORM)
                 .usage(vk::ImageUsageFlags::TRANSFER_DST)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .mip_levels(1)
