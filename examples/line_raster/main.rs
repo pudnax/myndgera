@@ -1,12 +1,27 @@
 use std::{mem, sync::Arc};
 
-use anyhow::{Ok, Result};
+use anyhow::{Context, Ok, Result};
 use ash::vk;
-use glam::{vec3, Vec2, Vec3, Vec4};
-use gpu_alloc::UsageFlags;
+use bytemuck::{Pod, Zeroable};
+use glam::{vec3, vec4, Mat4, Vec2, Vec3, Vec4};
+use gpu_allocator::MemoryLocation;
 use myndgera::*;
 
 use self::bloom::{Bloom, BloomParams};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuBuffer<T: Copy, const N: usize = 1> {
+    size: u32,
+    data: [T; N],
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
+struct Light {
+    transform: Mat4,
+    color: Vec4,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +38,7 @@ struct SpawnPC {
     num_bounces: u32,
     time: f32,
     line_buffer: u64,
+    lights_buffer: u64,
 }
 
 #[repr(C)]
@@ -54,10 +70,12 @@ struct PostProcessPC {
     hdr_storage: u32,
 }
 
+const NUM_LIGHTS: u32 = 3;
 const NUM_BOUNCES: u32 = 10;
 const NUM_RAYS: u32 = 150;
 
 struct LineRaster {
+    lights_buffer: Buffer,
     lines_buffer: Buffer,
     spawn_pass: ComputeHandle,
     clear_pass: ComputeHandle,
@@ -71,6 +89,7 @@ struct LineRaster {
     hdr_sampled_idx: u32,
     hdr_storage_idx: u32,
     bloom: Bloom,
+    staging: myndgera::Buffer,
     device: Arc<Device>,
 }
 
@@ -85,6 +104,18 @@ impl Example for LineRaster {
         "Line Rasteriazation"
     }
     fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
+        let size = mem::size_of::<GpuBuffer<Ray, { (NUM_RAYS * NUM_BOUNCES) as usize }>>();
+        let lines_buffer = ctx.device.create_buffer(
+            size as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            MemoryLocation::GpuOnly,
+        )?;
+        let size = mem::size_of::<GpuBuffer<Light, { NUM_LIGHTS as usize }>>();
+        let lights_buffer = ctx.device.create_buffer(
+            size as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+        )?;
         let push_constant_range = vk::PushConstantRange::default()
             .size(size_of::<SpawnPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
@@ -92,13 +123,6 @@ impl Example for LineRaster {
             "examples/line_raster/spawn.comp",
             &[push_constant_range],
             &[],
-        )?;
-        let size =
-            mem::size_of_val(&NUM_RAYS) + mem::size_of::<Ray>() * (NUM_RAYS * NUM_BOUNCES) as usize;
-        let lines_buffer = ctx.device.create_buffer(
-            size as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            UsageFlags::FAST_DEVICE_ACCESS,
         )?;
 
         let push_constant_range = vk::PushConstantRange::default()
@@ -176,9 +200,7 @@ impl Example for LineRaster {
                 .mip_levels(1)
                 .array_layers(1)
                 .tiling(vk::ImageTiling::OPTIMAL);
-            let (image, memory) = ctx
-                .device
-                .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let (image, memory) = ctx.device.create_image(&info, MemoryLocation::GpuOnly)?;
             let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT, 0)?;
             let idx = state
                 .texture_arena
@@ -201,11 +223,7 @@ impl Example for LineRaster {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let hdr_target = ManagedImage::new(
-            &ctx.device,
-            &hdr_target_info,
-            UsageFlags::FAST_DEVICE_ACCESS,
-        )?;
+        let hdr_target = ManagedImage::new(&ctx.device, &hdr_target_info, MemoryLocation::GpuOnly)?;
         let hdr_target_view =
             ctx.device
                 .create_2d_view(&hdr_target.image, hdr_target_info.format, 0)?;
@@ -221,9 +239,16 @@ impl Example for LineRaster {
 
         let bloom = Bloom::new(ctx, state)?;
 
+        let staging = ctx.device.create_buffer(
+            size as u64,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryLocation::CpuToGpu,
+        )?;
+
         Ok(Self {
-            spawn_pass,
+            lights_buffer,
             lines_buffer,
+            spawn_pass,
             clear_pass,
             raster_pass,
             resolve_pass,
@@ -235,6 +260,7 @@ impl Example for LineRaster {
             hdr_sampled_idx,
             hdr_storage_idx,
             bloom,
+            staging,
             device: ctx.device.clone(),
         })
     }
@@ -245,11 +271,45 @@ impl Example for LineRaster {
         state: &mut AppState,
         &cbuff: &vk::CommandBuffer,
     ) -> Result<()> {
+        let mut lights = [Light::default(); NUM_LIGHTS as usize];
+        lights[0] = Light {
+            transform: Mat4::look_at_rh(vec3(1., 1., 1.), vec3(0., 0., 0.), Vec3::Z),
+            color: vec4(1., 0., 0., 0.),
+        };
+        lights[1] = Light {
+            transform: Mat4::look_at_rh(vec3(-1., 1., 1.), vec3(0., 0., 0.), Vec3::Z),
+            color: vec4(0., 1., 0., 0.),
+        };
+        lights[2] = Light {
+            transform: Mat4::look_at_rh(vec3(-1., 1., -1.), vec3(0., 0., 0.), Vec3::Z),
+            color: vec4(0., 0., 1., 0.),
+        };
+
+        let buffer_data = GpuBuffer {
+            size: lights.len() as u32,
+            data: lights,
+        };
+        let size = std::mem::size_of_val(&buffer_data) as u64;
+        // let mut staging = ctx.device.create_buffer(
+        //     size,
+        //     vk::BufferUsageFlags::TRANSFER_SRC,
+        //     MemoryLocation::CpuToGpu,
+        // )?;
+        let mapped = self.staging.map_memory().context("Failed to map memory")?;
+        mapped.copy_from_slice(bytes_of(&buffer_data));
+        let region = vk::BufferCopy2::default().size(size);
+        let copy_info = vk::CopyBufferInfo2::default()
+            .src_buffer(self.staging.buffer)
+            .dst_buffer(self.lights_buffer.buffer)
+            .regions(std::slice::from_ref(&region));
+        unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
+
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
             num_rays: NUM_RAYS,
             num_bounces: NUM_BOUNCES,
             time: state.stats.time,
+            lights_buffer: self.lights_buffer.address,
             line_buffer: self.lines_buffer.address,
         };
         unsafe {
@@ -285,11 +345,8 @@ impl Example for LineRaster {
 
         self.hdr_target_info.extent.width = extent.width;
         self.hdr_target_info.extent.height = extent.height;
-        self.hdr_target = ManagedImage::new(
-            &ctx.device,
-            &self.hdr_target_info,
-            UsageFlags::FAST_DEVICE_ACCESS,
-        )?;
+        self.hdr_target =
+            ManagedImage::new(&ctx.device, &self.hdr_target_info, MemoryLocation::GpuOnly)?;
         ctx.device.name_object(self.hdr_target.image, "Hdr Target");
         unsafe { self.device.destroy_image_view(self.hdr_target_view, None) };
         self.hdr_target_view =

@@ -4,6 +4,7 @@
 mod camera;
 pub mod default_shaders;
 mod input;
+pub mod math;
 mod passes;
 mod recorder;
 mod shader_compiler;
@@ -14,7 +15,7 @@ mod watcher;
 use dolly::drivers::YawPitch;
 use either::Either;
 use glam::{vec2, vec3, Vec3};
-use gpu_alloc::UsageFlags;
+use gpu_allocator::MemoryLocation;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -41,8 +42,8 @@ pub use self::{
     watcher::Watcher,
 };
 
-use anyhow::bail;
 use anyhow::Result;
+use anyhow::{bail, Context};
 use ash::{khr, vk};
 
 pub const UPDATES_PER_SECOND: u32 = 60;
@@ -53,6 +54,15 @@ pub const SHADER_DUMP_FOLDER: &str = "shader_dump";
 pub const SHADER_FOLDER: &str = "shaders";
 pub const VIDEO_FOLDER: &str = "recordings";
 pub const SCREENSHOT_FOLDER: &str = "screenshots";
+
+pub fn bytes_of<T: Copy>(data: &T) -> &[u8] {
+    let ptr: *const T = data;
+    unsafe { std::slice::from_raw_parts(ptr.cast(), std::mem::size_of_val(data)) }
+}
+
+pub fn from_bytes<T>(bytes: &mut [u8]) -> &mut T {
+    unsafe { &mut *(bytes as *mut [u8] as *mut T) }
+}
 
 pub const COLOR_SUBRESOURCE_MASK: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
     aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -135,7 +145,7 @@ impl AppState {
         camera.aspect = ctx.swapchain.extent.width as f32 / ctx.swapchain.extent.height as f32;
         let camera_uniform = ctx.device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
-            UsageFlags::FAST_DEVICE_ACCESS,
+            MemoryLocation::GpuOnly,
         )?;
 
         Ok(Self {
@@ -160,7 +170,7 @@ impl AppState {
         })
     }
 
-    fn update(&mut self, ctx: &RenderContext, &cbuff: &vk::CommandBuffer) -> Result<()> {
+    fn update(&mut self, _ctx: &RenderContext, &_cbuff: &vk::CommandBuffer) -> Result<()> {
         self.input.process_position(&mut self.stats.pos);
 
         if self.input.mouse_state.left_held() {
@@ -191,18 +201,18 @@ impl AppState {
         self.camera.position = self.camera.rig.final_transform.position.into();
         self.camera.rotation = self.camera.rig.final_transform.rotation.into();
 
-        let mut staging = ctx.device.create_buffer_typed::<CameraUniform>(
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            UsageFlags::UPLOAD | UsageFlags::TRANSIENT,
-        )?;
-        let mapped = staging.map_memory()?;
-        *mapped = self.camera.get_uniform();
-        let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
-        let copy_info = vk::CopyBufferInfo2::default()
-            .src_buffer(staging.buffer)
-            .dst_buffer(self.camera_uniform.buffer)
-            .regions(std::slice::from_ref(&region));
-        unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
+        // let mut staging = ctx.device.create_buffer_typed::<CameraUniform>(
+        //     vk::BufferUsageFlags::TRANSFER_SRC,
+        //     MemoryLocation::CpuToGpu,
+        // )?;
+        // let mapped = staging.map_memory().context("Failed to map memory")?;
+        // *mapped = self.camera.get_uniform();
+        // let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
+        // let copy_info = vk::CopyBufferInfo2::default()
+        //     .src_buffer(staging.buffer)
+        //     .dst_buffer(self.camera_uniform.buffer)
+        //     .regions(std::slice::from_ref(&region));
+        // unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
 
         Ok(())
     }
@@ -341,16 +351,30 @@ impl<E: Example> AppInit<E> {
             .as_secs_f64()
             .min(MAX_FRAME_TIME);
         state.frame_instant = new_instant;
-        state.stats.time_delta = frame_time as _;
+        // state.stats.time_delta = frame_time as _;
 
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
+            let mut staging = self.device.create_buffer_typed::<CameraUniform>(
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                MemoryLocation::CpuToGpu,
+            )?;
             self.device
                 .one_time_submit(&self.render.queue, |device, cbuff| {
                     let _marker = device.create_scoped_marker(&cbuff, "State Update");
 
                     state.update(&self.render, &cbuff)?;
                     self.example.update(&self.render, state, &cbuff)?;
+
+                    let mapped = staging.map_memory().context("Failed to map memory")?;
+                    *mapped = state.camera.get_uniform();
+                    let region =
+                        vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
+                    let copy_info = vk::CopyBufferInfo2::default()
+                        .src_buffer(staging.buffer)
+                        .dst_buffer(state.camera_uniform.buffer)
+                        .regions(std::slice::from_ref(&region));
+                    unsafe { device.cmd_copy_buffer2(cbuff, &copy_info) };
 
                     Ok(())
                 })?;

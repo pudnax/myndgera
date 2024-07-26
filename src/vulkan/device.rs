@@ -1,7 +1,10 @@
 use anyhow::Result;
-use gpu_alloc::{GpuAllocator, MapError, MemoryBlock, Request, UsageFlags};
-use gpu_alloc_ash::AshMemoryDevice;
+use gpu_allocator::{
+    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
+    MemoryLocation,
+};
 use parking_lot::Mutex;
+use std::marker::PhantomData;
 use std::{
     ffi::{CStr, CString},
     mem::ManuallyDrop,
@@ -11,7 +14,7 @@ use std::{
 use ash::{
     ext, khr,
     prelude::VkResult,
-    vk::{self, DeviceMemory, Handle},
+    vk::{self, Handle},
 };
 
 use crate::{align_to, ManagedImage};
@@ -24,7 +27,7 @@ pub struct Device {
     pub command_pool: vk::CommandPool,
     pub main_queue_family_idx: u32,
     pub transfer_queue_family_idx: u32,
-    pub allocator: Arc<Mutex<GpuAllocator<DeviceMemory>>>,
+    pub allocator: Mutex<Allocator>,
     pub device: ash::Device,
     pub dynamic_rendering: khr::dynamic_rendering::Device,
     pub(crate) dbg_utils: ext::debug_utils::Device,
@@ -81,12 +84,14 @@ impl Device {
     pub fn create_image(
         &self,
         info: &vk::ImageCreateInfo,
-        usage: UsageFlags,
-    ) -> Result<(vk::Image, MemoryBlock<DeviceMemory>)> {
+        usage: MemoryLocation,
+    ) -> Result<(vk::Image, Allocation)> {
         let image = unsafe { self.device.create_image(info, None)? };
         let memory_reqs = unsafe { self.get_image_memory_requirements(image) };
-        let memory = self.alloc_memory(memory_reqs, usage)?;
-        unsafe { self.bind_image_memory(image, *memory.memory(), memory.offset()) }?;
+        let linear = info.tiling == vk::ImageTiling::LINEAR;
+        let memory =
+            self.alloc_memory(memory_reqs, usage, linear, AllocationResource::Image(image))?;
+        unsafe { self.bind_image_memory(image, memory.memory(), memory.offset()) }?;
         Ok((image, memory))
     }
 
@@ -130,7 +135,7 @@ impl Device {
         unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) }
     }
 
-    pub fn destroy_image(&self, image: vk::Image, memory: MemoryBlock<DeviceMemory>) {
+    pub fn destroy_image(&self, image: vk::Image, memory: Allocation) {
         unsafe { self.device.destroy_image(image, None) };
         self.dealloc_memory(memory);
     }
@@ -228,26 +233,28 @@ impl Device {
     pub fn alloc_memory(
         &self,
         memory_reqs: vk::MemoryRequirements,
-        usage: UsageFlags,
-    ) -> Result<gpu_alloc::MemoryBlock<DeviceMemory>, gpu_alloc::AllocationError> {
+        usage: MemoryLocation,
+        linear: bool,
+        resource: AllocationResource,
+    ) -> Result<Allocation, gpu_allocator::AllocationError> {
         let mut allocator = self.allocator.lock();
-        let memory_block = unsafe {
-            allocator.alloc(
-                AshMemoryDevice::wrap(self),
-                Request {
-                    size: memory_reqs.size,
-                    align_mask: memory_reqs.alignment - 1,
-                    usage: usage | UsageFlags::DEVICE_ADDRESS,
-                    memory_types: memory_reqs.memory_type_bits,
-                },
-            )
+        let allocation_scheme = match resource {
+            AllocationResource::Image(image) => AllocationScheme::DedicatedImage(image),
+            AllocationResource::Buffer(buffer) => AllocationScheme::DedicatedBuffer(buffer),
+            AllocationResource::None => AllocationScheme::GpuAllocatorManaged,
         };
-        memory_block
+        allocator.allocate(&AllocationCreateDesc {
+            name: &format!("Memory: {usage:?}"),
+            requirements: memory_reqs,
+            location: usage,
+            linear,
+            allocation_scheme,
+        })
     }
 
-    pub fn dealloc_memory(&self, block: MemoryBlock<DeviceMemory>) {
+    pub fn dealloc_memory(&self, memory: Allocation) {
         let mut allocator = self.allocator.lock();
-        unsafe { allocator.dealloc(AshMemoryDevice::wrap(self), block) };
+        let _ = allocator.free(memory);
     }
 
     pub fn blit_image(
@@ -278,7 +285,7 @@ impl Device {
             vk::Offset3D {
                 x: src_extent.width as _,
                 y: src_extent.height as _,
-                z: 0,
+                z: 1,
             },
         ];
         let dst_offsets = [
@@ -286,7 +293,7 @@ impl Device {
             vk::Offset3D {
                 x: dst_extent.width as _,
                 y: dst_extent.height as _,
-                z: 0,
+                z: 1,
             },
         ];
         let subresource_layer = vk::ImageSubresourceLayers {
@@ -348,7 +355,7 @@ impl Device {
                 .mip_levels(1)
                 .array_layers(1)
                 .tiling(vk::ImageTiling::LINEAR),
-            UsageFlags::DOWNLOAD,
+            MemoryLocation::GpuToCpu,
         )?;
 
         self.one_time_submit(queue, |device, command_buffer| {
@@ -373,7 +380,7 @@ impl Device {
         self: &Arc<Self>,
         size: u64,
         usage: vk::BufferUsageFlags,
-        memory_usage: gpu_alloc::UsageFlags,
+        memory_usage: MemoryLocation,
     ) -> Result<Buffer> {
         let buffer = unsafe {
             self.device.create_buffer(
@@ -385,8 +392,13 @@ impl Device {
         };
         let mem_requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
 
-        let memory = self.alloc_memory(mem_requirements, memory_usage)?;
-        unsafe { self.bind_buffer_memory(buffer, *memory.memory(), memory.offset()) }?;
+        let memory = self.alloc_memory(
+            mem_requirements,
+            memory_usage,
+            true,
+            AllocationResource::Buffer(buffer),
+        )?;
+        unsafe { self.bind_buffer_memory(buffer, memory.memory(), memory.offset()) }?;
 
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
@@ -397,7 +409,6 @@ impl Device {
             size,
             buffer,
             memory: ManuallyDrop::new(memory),
-            data: None,
             device: self.clone(),
         })
     }
@@ -405,7 +416,7 @@ impl Device {
     pub fn create_buffer_typed<T>(
         self: &Arc<Self>,
         usage: vk::BufferUsageFlags,
-        memory_usage: gpu_alloc::UsageFlags,
+        memory_usage: MemoryLocation,
     ) -> Result<BufferTyped<T>> {
         let byte_size = (size_of::<T>()) as vk::DeviceSize;
         let buffer = unsafe {
@@ -418,8 +429,13 @@ impl Device {
         };
         let mem_requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
 
-        let memory = self.alloc_memory(mem_requirements, memory_usage)?;
-        unsafe { self.bind_buffer_memory(buffer, *memory.memory(), memory.offset()) }?;
+        let memory = self.alloc_memory(
+            mem_requirements,
+            memory_usage,
+            true,
+            AllocationResource::Buffer(buffer),
+        )?;
+        unsafe { self.bind_buffer_memory(buffer, memory.memory(), memory.offset()) }?;
 
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
@@ -433,8 +449,8 @@ impl Device {
             address,
             buffer,
             memory: ManuallyDrop::new(memory),
-            data: None,
             device: self.clone(),
+            _marker: PhantomData,
         })
     }
 
@@ -474,38 +490,29 @@ impl Drop for Device {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_command_pool(self.command_pool, None);
-            {
-                let mut allocator = self.allocator.lock();
-                allocator.cleanup(AshMemoryDevice::wrap(&self.device));
-            }
             self.device.destroy_device(None);
         }
     }
+}
+
+pub enum AllocationResource {
+    Image(vk::Image),
+    Buffer(vk::Buffer),
+    None,
 }
 
 pub struct Buffer {
     pub address: u64,
     pub size: u64,
     pub buffer: vk::Buffer,
-    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub data: Option<&'static mut [u8]>,
+    pub memory: ManuallyDrop<Allocation>,
+    // pub data: Option<&'static mut [u8]>,
     device: Arc<Device>,
 }
 
 impl Buffer {
-    pub fn map_memory(&mut self) -> Result<&mut [u8], MapError> {
-        if self.data.is_some() {
-            return Ok(self.data.as_mut().unwrap());
-        }
-        let ptr = unsafe {
-            self.memory
-                .map(AshMemoryDevice::wrap(&self.device), 0, self.size as _)?
-        };
-
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), self.size as _) };
-        self.data = Some(data);
-
-        Ok(self.data.as_mut().unwrap())
+    pub fn map_memory(&mut self) -> Option<&mut [u8]> {
+        self.memory.mapped_slice_mut()
     }
 }
 
@@ -522,27 +529,16 @@ impl Drop for Buffer {
 pub struct BufferTyped<T: 'static> {
     pub address: u64,
     pub buffer: vk::Buffer,
-    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
-    pub data: Option<&'static mut T>,
+    pub memory: ManuallyDrop<Allocation>,
     device: Arc<Device>,
+    _marker: PhantomData<*mut T>,
 }
 
 impl<T> BufferTyped<T> {
-    pub fn map_memory(&mut self) -> Result<&mut T, MapError> {
-        if self.data.is_some() {
-            return Ok(self.data.as_mut().unwrap());
-        }
-        let ptr = unsafe {
-            self.memory.map(
-                AshMemoryDevice::wrap(&self.device),
-                0,
-                std::mem::size_of::<T>(),
-            )?
-        };
-
-        self.data = Some(unsafe { &mut *ptr.as_ptr().cast() });
-
-        Ok(self.data.as_mut().unwrap())
+    pub fn map_memory(&mut self) -> Option<&mut T> {
+        self.memory
+            .mapped_slice_mut()
+            .map(|slice| crate::from_bytes::<T>(slice))
     }
 }
 

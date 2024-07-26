@@ -10,6 +10,7 @@ layout(std430, push_constant) uniform PushConstant {
     uint num_bounces;
     float time;
     Rays rays_ptr;
+    Lights lights_ptr;
 }
 pc;
 

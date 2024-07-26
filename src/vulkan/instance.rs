@@ -1,9 +1,10 @@
-use std::{collections::HashSet, ffi::CStr, sync::Arc};
+use std::{collections::HashSet, ffi::CStr};
 
 use super::{device::Device, surface::Surface};
 
 use anyhow::{Context, Result};
 use ash::{ext, khr, vk, Entry};
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -223,10 +224,14 @@ impl Instance {
 
         let dynamic_rendering = khr::dynamic_rendering::Device::new(self, &device);
 
-        let device_alloc_properties =
-            unsafe { gpu_alloc_ash::device_properties(self, vk::API_VERSION_1_3, pdevice)? };
-        let allocator =
-            gpu_alloc::GpuAllocator::new(gpu_alloc::Config::i_am_potato(), device_alloc_properties);
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: self.inner.clone(),
+            device: device.clone(),
+            physical_device: pdevice,
+            debug_settings: gpu_allocator::AllocatorDebugSettings::default(),
+            buffer_device_address: true,
+            allocation_sizes: gpu_allocator::AllocationSizes::default(),
+        })?;
 
         let mut descriptor_indexing_props =
             vk::PhysicalDeviceDescriptorIndexingProperties::default();
@@ -254,7 +259,7 @@ impl Instance {
             transfer_queue_family_idx,
             command_pool,
             memory_properties,
-            allocator: Arc::new(Mutex::new(allocator)),
+            allocator: Mutex::new(allocator),
             device,
             dynamic_rendering,
             dbg_utils,

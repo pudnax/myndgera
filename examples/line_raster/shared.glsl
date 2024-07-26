@@ -1,6 +1,16 @@
 const float goldenAngle = 2.3999632297286533;
 const float RAY_COLOR_RANGE = 2500.;
 
+struct Light {
+    mat4 transform;
+    vec4 color;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer Lights {
+    uint len;
+    Light lights[];
+};
+
 struct Ray {
     vec4 color;
     vec3 start;

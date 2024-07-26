@@ -172,9 +172,9 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                     let padded_bytes = frame.image_dimensions.padded_bytes_per_row as _;
                     let unpadded_bytes = frame.image_dimensions.unpadded_bytes_per_row as _;
                     let data = match frame.map_memory() {
-                        Ok(data) => data,
-                        Err(err) => {
-                            log::error!("Failed to map memory: {err}");
+                        Some(data) => data,
+                        None => {
+                            log::error!("Failed to map memory");
                             continue;
                         }
                     };
@@ -198,9 +198,9 @@ fn record_thread(rx: Receiver<RecordEvent>) {
             RecordEvent::Screenshot(mut frame) => {
                 let image_dimensions = frame.image_dimensions;
                 let data = match frame.map_memory() {
-                    Ok(data) => data,
-                    Err(err) => {
-                        log::error!("Failed to map memory: {err}");
+                    Some(data) => data,
+                    None => {
+                        log::error!("Failed to map memory");
                         continue;
                     }
                 };

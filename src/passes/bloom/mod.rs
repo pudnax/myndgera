@@ -3,7 +3,7 @@ use std::{mem, sync::Arc};
 use anyhow::Result;
 use ash::vk;
 use glam::{uvec2, UVec2};
-use gpu_alloc::UsageFlags;
+use gpu_allocator::MemoryLocation;
 
 use crate::{
     dispatch_optimal, AppState, ComputeHandle, Device, FrameGuard, ManagedImage, RenderContext,
@@ -111,8 +111,7 @@ impl Bloom {
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let accum_texture =
-            ManagedImage::new(&ctx.device, &texture_info, UsageFlags::FAST_DEVICE_ACCESS)?;
+        let accum_texture = ManagedImage::new(&ctx.device, &texture_info, MemoryLocation::GpuOnly)?;
 
         let mut accum_views = vec![];
         let mut accum_texture_storage_idx = vec![];
@@ -152,11 +151,8 @@ impl Bloom {
     pub fn resize(&mut self, ctx: &RenderContext, state: &mut AppState) -> Result<()> {
         self.texture_info.extent.width = ctx.swapchain.extent.width / 2;
         self.texture_info.extent.height = ctx.swapchain.extent.height / 2;
-        self.accum_texture = ManagedImage::new(
-            &ctx.device,
-            &self.texture_info,
-            UsageFlags::FAST_DEVICE_ACCESS,
-        )?;
+        self.accum_texture =
+            ManagedImage::new(&ctx.device, &self.texture_info, MemoryLocation::GpuOnly)?;
         ctx.device
             .name_object(self.accum_texture.image, "Bloom Texture");
         unsafe {

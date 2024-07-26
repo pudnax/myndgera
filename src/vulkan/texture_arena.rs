@@ -1,9 +1,8 @@
 use std::{mem::ManuallyDrop, sync::Arc};
 
-use anyhow::Result;
-use ash::vk::{self, DeviceMemory, Handle};
-use gpu_alloc::{MapError, MemoryBlock, UsageFlags};
-use gpu_alloc_ash::AshMemoryDevice;
+use anyhow::{Context, Result};
+use ash::vk::{self, Handle};
+use gpu_allocator::{vulkan::Allocation, MemoryLocation};
 
 use crate::align_to;
 
@@ -51,7 +50,7 @@ impl ImageDimensions {
 
 pub struct ManagedImage {
     pub image: vk::Image,
-    pub memory: ManuallyDrop<MemoryBlock<DeviceMemory>>,
+    pub memory: ManuallyDrop<Allocation>,
     pub image_dimensions: ImageDimensions,
     pub data: Option<&'static mut [u8]>,
     pub format: vk::Format,
@@ -62,7 +61,7 @@ impl ManagedImage {
     pub fn new(
         device: &Arc<Device>,
         info: &vk::ImageCreateInfo,
-        usage: gpu_alloc::UsageFlags,
+        usage: MemoryLocation,
     ) -> anyhow::Result<Self> {
         let (image, memory) = device.create_image(info, usage)?;
         let memory_reqs = unsafe { device.get_image_memory_requirements(image) };
@@ -81,21 +80,8 @@ impl ManagedImage {
         })
     }
 
-    pub fn map_memory(&mut self) -> Result<&mut [u8], MapError> {
-        if self.data.is_some() {
-            return Err(MapError::AlreadyMapped);
-        }
-        let size = self.memory.size() as usize;
-        let offset = self.memory.offset();
-        let ptr = unsafe {
-            self.memory
-                .map(AshMemoryDevice::wrap(&self.device), offset, size)?
-        };
-
-        let data = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr().cast(), size) };
-        self.data = Some(data);
-
-        Ok(self.data.as_mut().unwrap())
+    pub fn map_memory(&mut self) -> Option<&mut [u8]> {
+        self.memory.mapped_slice_mut()
     }
 }
 
@@ -110,14 +96,14 @@ impl Drop for ManagedImage {
 
 pub struct TextureArena {
     pub sampled_images: Vec<vk::Image>,
-    pub sampled_memories: Vec<Option<MemoryBlock<DeviceMemory>>>,
+    pub sampled_memories: Vec<Option<Allocation>>,
     pub sampled_infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
     pub sampled_views: Vec<vk::ImageView>,
     pub sampled_set: vk::DescriptorSet,
     pub sampled_set_layout: vk::DescriptorSetLayout,
 
     pub storage_images: Vec<vk::Image>,
-    pub storage_memory: Vec<Option<MemoryBlock<DeviceMemory>>>,
+    pub storage_memory: Vec<Option<Allocation>>,
     pub storage_infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
     pub storage_views: Vec<vk::ImageView>,
     pub storage_set: vk::DescriptorSet,
@@ -316,7 +302,7 @@ impl TextureArena {
         });
 
         for info in image_infos {
-            let (image, memory) = device.create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let (image, memory) = device.create_image(&info, MemoryLocation::GpuOnly)?;
             let view = device.create_2d_view(&image, info.format, 0)?;
             texture_arena.push_sampled_image(image, view, Some(memory), Some(info));
         }
@@ -388,7 +374,7 @@ impl TextureArena {
         &mut self,
         image: vk::Image,
         view: vk::ImageView,
-        memory: Option<MemoryBlock<DeviceMemory>>,
+        memory: Option<Allocation>,
         info: Option<vk::ImageCreateInfo<'static>>,
     ) -> u32 {
         if let (Some(_), None) | (None, Some(_)) = (&info, &memory) {
@@ -422,7 +408,7 @@ impl TextureArena {
         &mut self,
         image: vk::Image,
         view: vk::ImageView,
-        memory: Option<MemoryBlock<DeviceMemory>>,
+        memory: Option<Allocation>,
         info: Option<vk::ImageCreateInfo<'static>>,
     ) -> u32 {
         if let (Some(_), None) | (None, Some(_)) = (&info, &memory) {
@@ -458,16 +444,14 @@ impl TextureArena {
         info: vk::ImageCreateInfo<'static>,
         data: &[u8],
     ) -> Result<u32> {
-        let (image, memory) = self
-            .device
-            .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+        let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
 
         let mut staging = self.device.create_buffer(
             memory.size(),
             vk::BufferUsageFlags::TRANSFER_SRC,
-            UsageFlags::UPLOAD | UsageFlags::TRANSIENT,
+            MemoryLocation::CpuToGpu,
         )?;
-        let mapped = staging.map_memory()?;
+        let mapped = staging.map_memory().context("Failed to map memory")?;
         mapped[..data.len()].copy_from_slice(data);
 
         self.device.one_time_submit(queue, |device, cbuff| unsafe {
@@ -555,9 +539,7 @@ impl TextureArena {
             .iter()
             .filter_map(|&i| self.sampled_infos[i].map(|info| (i, info)))
         {
-            let (image, memory) = self
-                .device
-                .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
             let view = self.device.create_2d_view(&image, info.format, 0)?;
 
             self.update_sampled_image(i as u32, &view);
@@ -580,9 +562,7 @@ impl TextureArena {
             .iter()
             .filter_map(|&i| self.storage_infos[i].map(|info| (i, info)))
         {
-            let (image, memory) = self
-                .device
-                .create_image(&info, UsageFlags::FAST_DEVICE_ACCESS)?;
+            let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
             let view = self.device.create_2d_view(&image, info.format, 0)?;
 
             self.update_storage_image(i as u32, &view);

@@ -10,13 +10,11 @@ winit = "0.30"
 ash = "0.38"
 ash-window = "0.13"
 bitflags = "2"
-bytemuck = { version = "1.16", features = ["derive"] }
+bytemuck = { version = "1.16", features = ["derive", "min_const_generics"] }
 ahash = "0.8"
 slotmap = "1.0"
 either = "1.13"
 parking_lot = "0.12"
-gpu-alloc = "0.6.0"
-gpu-alloc-ash = "0.7.0"
 
 # Fancy-pants errors
 anyhow = "1.0"
@@ -40,6 +38,7 @@ pretty-type-name = "1.0.1"
 glam = { version = "0.28.0", features = ["bytemuck", "mint", "rand"] }
 dolly = "0.6"
 rand = "0.8"
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
 
 [profile.deploy]
 inherits = "release"
