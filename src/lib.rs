@@ -42,8 +42,8 @@ pub use self::{
     watcher::Watcher,
 };
 
+use anyhow::bail;
 use anyhow::Result;
-use anyhow::{bail, Context};
 use ash::{khr, vk};
 
 pub const UPDATES_PER_SECOND: u32 = 60;
@@ -111,6 +111,7 @@ pub struct AppState {
     frame_accumulated_time: f64,
 
     pub texture_arena: TextureArena,
+    pub staging_write: StagingWrite,
 
     recorder: Recorder,
     video_recording: bool,
@@ -131,6 +132,7 @@ impl AppState {
         let recorder = Recorder::new();
 
         let pipeline_arena = PipelineArena::new(&ctx.device, watcher.clone())?;
+        let staging_write = StagingWrite::new(&ctx.device)?;
 
         let extent = ctx.swapchain.extent();
         let video_recording = record_time.is_some();
@@ -161,6 +163,7 @@ impl AppState {
             frame_accumulated_time: 0.,
 
             texture_arena,
+            staging_write,
 
             recorder,
             video_recording,
@@ -201,18 +204,10 @@ impl AppState {
         self.camera.position = self.camera.rig.final_transform.position.into();
         self.camera.rotation = self.camera.rig.final_transform.rotation.into();
 
-        // let mut staging = ctx.device.create_buffer_typed::<CameraUniform>(
-        //     vk::BufferUsageFlags::TRANSFER_SRC,
-        //     MemoryLocation::CpuToGpu,
-        // )?;
-        // let mapped = staging.map_memory().context("Failed to map memory")?;
-        // *mapped = self.camera.get_uniform();
-        // let region = vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
-        // let copy_info = vk::CopyBufferInfo2::default()
-        //     .src_buffer(staging.buffer)
-        //     .dst_buffer(self.camera_uniform.buffer)
-        //     .regions(std::slice::from_ref(&region));
-        // unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
+        self.staging_write.write_buffer(
+            self.camera_uniform.buffer,
+            bytes_of(&self.camera.get_uniform()),
+        );
 
         Ok(())
     }
@@ -355,10 +350,7 @@ impl<E: Example> AppInit<E> {
 
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
-            let mut staging = self.device.create_buffer_typed::<CameraUniform>(
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                MemoryLocation::CpuToGpu,
-            )?;
+            state.staging_write.clear();
             self.device
                 .one_time_submit(&self.render.queue, |device, cbuff| {
                     let _marker = device.create_scoped_marker(&cbuff, "State Update");
@@ -366,15 +358,8 @@ impl<E: Example> AppInit<E> {
                     state.update(&self.render, &cbuff)?;
                     self.example.update(&self.render, state, &cbuff)?;
 
-                    let mapped = staging.map_memory().context("Failed to map memory")?;
-                    *mapped = state.camera.get_uniform();
-                    let region =
-                        vk::BufferCopy2::default().size(std::mem::size_of::<CameraUniform>() as _);
-                    let copy_info = vk::CopyBufferInfo2::default()
-                        .src_buffer(staging.buffer)
-                        .dst_buffer(state.camera_uniform.buffer)
-                        .regions(std::slice::from_ref(&region));
-                    unsafe { device.cmd_copy_buffer2(cbuff, &copy_info) };
+                    state.staging_write.reserve_buffer()?;
+                    state.staging_write.consume_pending_writes(&cbuff)?;
 
                     Ok(())
                 })?;

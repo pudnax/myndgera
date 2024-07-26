@@ -1,6 +1,6 @@
 use std::{mem, sync::Arc};
 
-use anyhow::{Context, Ok, Result};
+use anyhow::{Ok, Result};
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use glam::{vec3, vec4, Mat4, Vec2, Vec3, Vec4};
@@ -89,7 +89,6 @@ struct LineRaster {
     hdr_sampled_idx: u32,
     hdr_storage_idx: u32,
     bloom: Bloom,
-    staging: myndgera::Buffer,
     device: Arc<Device>,
 }
 
@@ -239,12 +238,6 @@ impl Example for LineRaster {
 
         let bloom = Bloom::new(ctx, state)?;
 
-        let staging = ctx.device.create_buffer(
-            size as u64,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-        )?;
-
         Ok(Self {
             lights_buffer,
             lines_buffer,
@@ -260,7 +253,6 @@ impl Example for LineRaster {
             hdr_sampled_idx,
             hdr_storage_idx,
             bloom,
-            staging,
             device: ctx.device.clone(),
         })
     }
@@ -289,20 +281,10 @@ impl Example for LineRaster {
             size: lights.len() as u32,
             data: lights,
         };
-        let size = std::mem::size_of_val(&buffer_data) as u64;
-        // let mut staging = ctx.device.create_buffer(
-        //     size,
-        //     vk::BufferUsageFlags::TRANSFER_SRC,
-        //     MemoryLocation::CpuToGpu,
-        // )?;
-        let mapped = self.staging.map_memory().context("Failed to map memory")?;
-        mapped.copy_from_slice(bytes_of(&buffer_data));
-        let region = vk::BufferCopy2::default().size(size);
-        let copy_info = vk::CopyBufferInfo2::default()
-            .src_buffer(self.staging.buffer)
-            .dst_buffer(self.lights_buffer.buffer)
-            .regions(std::slice::from_ref(&region));
-        unsafe { ctx.device.cmd_copy_buffer2(cbuff, &copy_info) };
+
+        state
+            .staging_write
+            .write_buffer(self.lights_buffer.buffer, bytes_of(&buffer_data));
 
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
