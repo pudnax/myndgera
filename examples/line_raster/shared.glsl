@@ -2,8 +2,9 @@ const float goldenAngle = 2.3999632297286533;
 const float RAY_COLOR_RANGE = 2500.;
 
 struct Light {
-    mat4 transform;
+    vec4 pos;
     vec4 color;
+    mat4 transform;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer Lights {
@@ -50,7 +51,7 @@ float mandelbox(vec3 position) {
 float sdf_model(vec3 p) {
     float width = 2.5;
     float d = sd_box(p, vec3(width));
-    d = length(p) - width;
+    // d = length(p) - width;
     d = mandelbox(p);
     // d = abs(d) - 0.01;
 
@@ -70,7 +71,7 @@ vec2 trace(vec3 eye, vec3 dir) {
         float d = sdf_model(pos);
         if ((d) < 0.01) { return vec2(t, 1.); }
         t += d;
-        if (t > 500.) { break; }
+        if (t > 500.) { return vec2(t, 0.); }
     }
     return vec2(-1.);
 }

@@ -3,11 +3,15 @@ use std::{mem, sync::Arc};
 use anyhow::{Ok, Result};
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
-use glam::{vec3, vec4, Mat4, Vec2, Vec3, Vec4};
+use glam::{vec3, Mat4, Vec2, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use myndgera::*;
 
 use self::bloom::{Bloom, BloomParams};
+
+const NUM_LIGHTS: u32 = 3;
+const NUM_RAYS: u32 = 250 * NUM_LIGHTS;
+const NUM_BOUNCES: u32 = 15;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -19,8 +23,9 @@ struct GpuBuffer<T: Copy, const N: usize = 1> {
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
 struct Light {
-    transform: Mat4,
+    pos: Vec4,
     color: Vec4,
+    transform: Mat4,
 }
 
 #[repr(C)]
@@ -69,10 +74,6 @@ struct PostProcessPC {
     hdr_sampled: u32,
     hdr_storage: u32,
 }
-
-const NUM_LIGHTS: u32 = 3;
-const NUM_BOUNCES: u32 = 10;
-const NUM_RAYS: u32 = 150;
 
 struct LineRaster {
     lights_buffer: Buffer,
@@ -188,25 +189,28 @@ impl Example for LineRaster {
             height: ctx.swapchain.extent.height,
             depth: 1,
         };
+        let image_info = vk::ImageCreateInfo::default()
+            .extent(extent)
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R32_UINT)
+            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .mip_levels(1)
+            .array_layers(1)
+            .tiling(vk::ImageTiling::OPTIMAL);
         for i in 0..3 {
-            let device = &ctx.device;
-            let info = vk::ImageCreateInfo::default()
-                .extent(extent)
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R32_UINT)
-                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .mip_levels(1)
-                .array_layers(1)
-                .tiling(vk::ImageTiling::OPTIMAL);
-            let (image, memory) = ctx.device.create_image(&info, MemoryLocation::GpuOnly)?;
+            let (image, memory) = ctx
+                .device
+                .create_image(&image_info, MemoryLocation::GpuOnly)?;
             let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT, 0)?;
-            let idx = state
-                .texture_arena
-                .push_storage_image(image, view, Some(memory), Some(info));
+            let idx =
+                state
+                    .texture_arena
+                    .push_storage_image(image, view, Some(memory), Some(image_info));
             accumulate_images.push(idx as usize);
-            device.name_object(view, &format!("Storage img view: {i}"));
-            device.name_object(image, &format!("Storage img: {i}"));
+            ctx.device
+                .name_object(view, &format!("Storage img view: {i}"));
+            ctx.device.name_object(image, &format!("Storage img: {i}"));
         }
 
         let hdr_target_info = vk::ImageCreateInfo::default()
@@ -235,6 +239,7 @@ impl Example for LineRaster {
                 .texture_arena
                 .push_storage_image(hdr_target.image, hdr_target_view, None, None);
         ctx.device.name_object(hdr_target.image, "Hdr Target");
+        ctx.device.name_object(hdr_target_view, "Hdr Target View");
 
         let bloom = Bloom::new(ctx, state)?;
 
@@ -263,19 +268,45 @@ impl Example for LineRaster {
         state: &mut AppState,
         &cbuff: &vk::CommandBuffer,
     ) -> Result<()> {
+        let look_at = |eye: glam::Vec3, pivot: glam::Vec3, up: glam::Vec3| -> glam::Mat4 {
+            let z = pivot - eye;
+            let z = z.normalize();
+
+            let x = up.cross(z).normalize();
+            let y = z.cross(x);
+            glam::Mat4::from_cols(
+                glam::Vec4::new(x.x, y.x, z.x, 0.0),
+                glam::Vec4::new(x.y, y.y, z.y, 0.0),
+                glam::Vec4::new(x.z, y.z, z.z, 0.0),
+                glam::Vec4::new(-x.dot(eye), -y.dot(eye), -z.dot(eye), 1.0),
+            )
+        };
         let mut lights = [Light::default(); NUM_LIGHTS as usize];
-        lights[0] = Light {
-            transform: Mat4::look_at_rh(vec3(1., 1., 1.), vec3(0., 0., 0.), Vec3::Z),
-            color: vec4(1., 0., 0., 0.),
+        let rot = Mat4::from_rotation_y(state.stats.time);
+        // let rot = Mat4::from_rotation_y(0.);
+        let make_light = |pos: Vec3, col: Vec3| Light {
+            pos: pos.extend(0.),
+            // transform: Mat4::look_at_rh(pos, vec3(-1., 0., 5.), Vec3::Y),
+            transform: look_at(pos, vec3(0., 0., 0.), Vec3::Y),
+            color: col.extend(0.),
         };
-        lights[1] = Light {
-            transform: Mat4::look_at_rh(vec3(-1., 1., 1.), vec3(0., 0., 0.), Vec3::Z),
-            color: vec4(0., 1., 0., 0.),
-        };
-        lights[2] = Light {
-            transform: Mat4::look_at_rh(vec3(-1., 1., -1.), vec3(0., 0., 0.), Vec3::Z),
-            color: vec4(0., 0., 1., 0.),
-        };
+        let scale = Mat4::from_scale(vec3(5., 5., 5.));
+        let scale = Mat4::from_scale(Vec3::splat(1.));
+        let light_pos = rot * scale * Mat4::from_translation(vec3(1., 1., 1.));
+        lights[0] = make_light(
+            light_pos.transform_point3(vec3(0., 0., 0.)),
+            vec3(1., 0., 0.),
+        );
+        let light_pos = rot * scale * Mat4::from_translation(vec3(-1., 1., 1.));
+        lights[1] = make_light(
+            light_pos.transform_point3(vec3(0., 0., 0.)),
+            vec3(0., 1., 0.),
+        );
+        let light_pos = rot * scale * Mat4::from_translation(vec3(1., -1., 1.));
+        lights[2] = make_light(
+            light_pos.transform_point3(vec3(0., 0., 0.)),
+            vec3(0., 0., 1.),
+        );
 
         let buffer_data = GpuBuffer {
             size: lights.len() as u32,
@@ -295,15 +326,12 @@ impl Example for LineRaster {
             line_buffer: self.lines_buffer.address,
         };
         unsafe {
-            let ptr = core::ptr::from_ref(&spawn_push_constant);
-            let bytes =
-                core::slice::from_raw_parts(ptr.cast(), mem::size_of_val(&spawn_push_constant));
             ctx.device.cmd_push_constants(
                 cbuff,
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
-                bytes,
+                bytes_of(&spawn_push_constant),
             );
             ctx.device
                 .cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
@@ -349,6 +377,18 @@ impl Example for LineRaster {
     ) -> Result<()> {
         let idx = frame.image_idx;
 
+        let global_barrier = |src, dst| {
+            unsafe {
+                let mem_barrier = vk::MemoryBarrier2::default()
+                    .src_stage_mask(src)
+                    .dst_stage_mask(dst);
+                self.device.cmd_pipeline_barrier2(
+                    *frame.command_buffer(),
+                    &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
+                )
+            };
+        };
+
         let raster_push_const = RasterPC {
             red_image: self.accumulate_images[0] as u32,
             green_image: self.accumulate_images[1] as u32,
@@ -380,15 +420,10 @@ impl Example for LineRaster {
             );
         }
 
-        unsafe {
-            let mem_barrier = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
-            self.device.cmd_pipeline_barrier2(
-                *frame.command_buffer(),
-                &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
-            )
-        };
+        global_barrier(
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+        );
 
         {
             let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
@@ -409,15 +444,10 @@ impl Example for LineRaster {
             frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 256), 1, 1);
         }
 
-        unsafe {
-            let mem_barrier = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
-            self.device.cmd_pipeline_barrier2(
-                *frame.command_buffer(),
-                &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
-            )
-        };
+        global_barrier(
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+        );
 
         {
             self.device.image_transition(
@@ -456,6 +486,11 @@ impl Example for LineRaster {
             );
         }
 
+        global_barrier(
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+        );
+
         self.bloom.apply(
             ctx,
             state,
@@ -468,6 +503,11 @@ impl Example for LineRaster {
                 strength: 4. / 16.,
                 width: 2.,
             },
+        );
+
+        global_barrier(
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+            vk::PipelineStageFlags2::ALL_GRAPHICS,
         );
 
         {

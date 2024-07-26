@@ -2,7 +2,8 @@
 
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
-layout(set = 1, binding = 0) uniform image2D gstorage[];
+layout(set = 1, binding = 0) writeonly coherent
+    restrict uniform image2D gstorage[];
 
 layout(std430, push_constant) uniform PushConstant {
     uint source_img;

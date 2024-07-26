@@ -71,7 +71,7 @@ impl Drop for Bloom {
 
 impl Bloom {
     pub fn new(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
-        let miplevel_count = 6;
+        let miplevel_count = 5;
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .size(mem::size_of::<DownsamplePC>() as u32);
@@ -119,6 +119,7 @@ impl Bloom {
             let view = ctx
                 .device
                 .create_2d_view(&accum_texture.image, texture_info.format, i)?;
+            ctx.device.name_object(view, &format!("Bloom View {i}"));
 
             accum_texture_storage_idx.push(state.texture_arena.push_storage_image(
                 accum_texture.image,
