@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
 
 // In the beginning, colours never existed. There's nothing that was done before
 // you...
@@ -22,7 +23,7 @@ vec4 TexLinear(uint tex_id) { return Tex(tex_id, LINEAR_SAMPL, in_uv); }
 vec4 TexNear(uint tex_id, vec2 uv) { return Tex(tex_id, NEAREST_SAMPL, uv); }
 vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
 
-layout(std430, push_constant) uniform PushConstant {
+layout(scalar, push_constant) uniform PushConstant {
     vec3 pos;
     float time;
     vec2 resolution;

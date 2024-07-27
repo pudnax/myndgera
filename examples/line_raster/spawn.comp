@@ -5,7 +5,7 @@
 
 #include "shared.glsl"
 
-layout(std430, push_constant) uniform PushConstant {
+layout(scalar, push_constant) uniform PushConstant {
     uint num_rays;
     uint num_bounces;
     float time;
@@ -51,7 +51,7 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx == 0) { pc.rays_ptr.len = pc.num_rays * pc.num_bounces; }
-    if (idx > pc.num_rays * pc.num_bounces) { return; }
+    if (idx > pc.num_rays) { return; }
     uint ray_idx = idx * pc.num_bounces;
     for (int i = 0; i < pc.num_bounces; ++i) {
         pc.rays_ptr.rays[ray_idx + i] = Ray(vec4(0.), vec3(0.), vec3(0.));
@@ -64,7 +64,7 @@ void main() {
     vec3 col = light.color.rgb;
     vec3 origin = (light.transform * vec4(vec3(0., 0., 0.), 1.)).xyz;
     origin = light.pos.xyz;
-    vec3 dir = rand_cone_direction(float(idx) / float(pc.num_rays), 6.,
+    vec3 dir = rand_cone_direction(float(idx) / float(pc.num_rays), 5.,
                                    int(pc.num_rays));
     // dir = vec3(0., 0., 1.);
     dir = (light.transform * vec4(dir, 0.)).xyz;
@@ -72,19 +72,22 @@ void main() {
     dir = normalize(dir);
     // origin.xz *= rot(pc.time);
 
+    float throughput = 1.;
     for (int i = 0; i < pc.num_bounces; ++i) {
         vec2 hit = trace(origin, dir);
-        // if (hit.y <= 0.) { break; }
+        if (hit.y <= 0.) { break; }
         if (hit.y <= 0.) { hit.x = 5.; }
         vec3 pos = origin + dir * hit.x;
         vec3 nor = get_norm(pos);
 
         dir = reflect(dir, nor);
         vec3 end = pos + nor * 0.01;
-        float throughput = 1. - float(i) / float(pc.num_bounces);
+        // float throughput = 1. - float(i) / float(pc.num_bounces);
         if (hit.y <= 0.) { throughput = 0.5; }
-        Ray ray = Ray(vec4(col, pow(throughput, 5.)), vec3(origin), vec3(end));
+        Ray ray = Ray(vec4(col * 0.15, pow(throughput, 2.5)), vec3(origin),
+                      vec3(end));
         pc.rays_ptr.rays[ray_idx + i] = ray;
+        throughput *= 0.85;
         if (hit.y <= 0.) { break; }
 
         origin = end;

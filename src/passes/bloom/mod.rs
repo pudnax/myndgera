@@ -71,7 +71,7 @@ impl Drop for Bloom {
 
 impl Bloom {
     pub fn new(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
-        let miplevel_count = 5;
+        let miplevel_count = 6;
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .size(mem::size_of::<DownsamplePC>() as u32);
@@ -207,6 +207,8 @@ impl Bloom {
         let image_barriers = {
             let image_barrier = vk::ImageMemoryBarrier2::default()
                 .subresource_range(COLOR_SUBRESOURCE_MASK)
+                .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
                 .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
             [

@@ -15,7 +15,7 @@ layout(set = 1, binding = 0, r32ui) coherent
 layout(set = 1, binding = 0) writeonly coherent
     restrict uniform image2D gstorage_write[];
 
-layout(std430, push_constant) uniform PushConstant {
+layout(scalar, push_constant) uniform PushConstant {
     uint target_img;
     uint red_img;
     uint green_img;
@@ -33,14 +33,14 @@ vec2 cs_to_uv(vec2 pix, vec2 dims) {
 
 vec2 RESOLUTION;
 
-float map(vec3 p) { return sd_box(p, vec3(0.1, 0.25, 0.1)); }
+float sdf_model1(vec3 p) { return sd_box(p, vec3(4.)); }
 
 vec3 get_norm(vec3 p, float s) {
     vec2 off = vec2(s, 0);
-    return normalize(vec3(sdf_model(p + off.xyy).x, sdf_model(p + off.yxy).x,
-                          sdf_model(p + off.yyx).x) -
-                     vec3(sdf_model(p - off.xyy).x, sdf_model(p - off.yxy).x,
-                          sdf_model(p - off.yyx).x));
+    return normalize(vec3(sdf_model1(p + off.xyy).x, sdf_model1(p + off.yxy).x,
+                          sdf_model1(p + off.yyx).x) -
+                     vec3(sdf_model1(p - off.xyy).x, sdf_model1(p - off.yxy).x,
+                          sdf_model1(p - off.yyx).x));
 }
 
 vec3 wire_trace(vec3 eye, vec3 dir) {
@@ -50,7 +50,7 @@ vec3 wire_trace(vec3 eye, vec3 dir) {
     float t = 0.;
     for (int i = 0; i < 50; i++) {
         vec3 pos = eye + dir * t;
-        float d = sdf_model(pos);
+        float d = sdf_model1(pos);
         if (abs(d) < 0.001) {
             float edge = 0.0015 * clamp(800. / RESOLUTION.x, 1., 2.5);
             float edge_amount =
@@ -82,7 +82,7 @@ void main() {
     vec3 dir = normalize(view_dir.xyz);
 
     vec3 col = vec3(0.);
-    // col += wire_trace(eye, dir) * 0.25;
+    col += wire_trace(eye, dir) * 0.25;
 
     float red = imageLoad(gstorage_read[pc.red_img], ipix).x;
     float green = imageLoad(gstorage_read[pc.green_img], ipix).x;

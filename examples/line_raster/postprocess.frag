@@ -24,7 +24,7 @@ vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
 
 layout(set = 1, binding = 0) uniform readonly image2D gstorage[];
 
-layout(std430, push_constant) uniform PushConstant {
+layout(scalar, push_constant) uniform PushConstant {
     uint idx;
     uint hdr_sampled;
     uint hdr_storage;

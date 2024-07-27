@@ -107,15 +107,15 @@ fn new_ffmpeg_command(image_dimensions: ImageDimensions, filename: &str) -> Resu
         "-framerate", "60",
         "-pix_fmt", "rgba",
         "-f", "rawvideo",
-        // "-vcodec", "rawvideo",
+        "-vcodec", "rawvideo",
         "-i", "pipe:",
         "-c:v", "libx264",
         "-crf", "23",
         // "-preset", "ultrafast",
-        // "-tune", "animation",
-        // "-color_primaries", "bt709",
-        // "-color_trc", "bt709",
-        // "-colorspace", "bt709",
+        "-tune", "animation",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-colorspace", "bt709",
         "-color_range", "tv",
         "-chroma_sample_location", "center",
         // "-pix_fmt", "yuv420p",
@@ -158,7 +158,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                 create_folder(VIDEO_FOLDER).unwrap();
                 let dir_path = Path::new(VIDEO_FOLDER);
                 let filename = dir_path.join(format!(
-                    "recordind-{}.mp4",
+                    "recording-{}.mp4",
                     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
                 ));
                 recorder =

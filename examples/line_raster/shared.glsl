@@ -1,5 +1,5 @@
 const float goldenAngle = 2.3999632297286533;
-const float RAY_COLOR_RANGE = 2500.;
+const float RAY_COLOR_RANGE = 5000.;
 
 struct Light {
     vec4 pos;
@@ -55,6 +55,7 @@ float sdf_model(vec3 p) {
     d = mandelbox(p);
     // d = abs(d) - 0.01;
 
+    d = min(d, abs(sd_box(p, vec3(4.))) - 0.01);
     return d;
 }
 

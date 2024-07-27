@@ -10,7 +10,7 @@ use myndgera::*;
 use self::bloom::{Bloom, BloomParams};
 
 const NUM_LIGHTS: u32 = 3;
-const NUM_RAYS: u32 = 250 * NUM_LIGHTS;
+const NUM_RAYS: u32 = 1000 * NUM_LIGHTS;
 const NUM_BOUNCES: u32 = 15;
 
 #[repr(C)]
@@ -268,39 +268,24 @@ impl Example for LineRaster {
         state: &mut AppState,
         &cbuff: &vk::CommandBuffer,
     ) -> Result<()> {
-        let look_at = |eye: glam::Vec3, pivot: glam::Vec3, up: glam::Vec3| -> glam::Mat4 {
-            let z = pivot - eye;
-            let z = z.normalize();
-
-            let x = up.cross(z).normalize();
-            let y = z.cross(x);
-            glam::Mat4::from_cols(
-                glam::Vec4::new(x.x, y.x, z.x, 0.0),
-                glam::Vec4::new(x.y, y.y, z.y, 0.0),
-                glam::Vec4::new(x.z, y.z, z.z, 0.0),
-                glam::Vec4::new(-x.dot(eye), -y.dot(eye), -z.dot(eye), 1.0),
-            )
-        };
         let mut lights = [Light::default(); NUM_LIGHTS as usize];
         let rot = Mat4::from_rotation_y(state.stats.time);
-        // let rot = Mat4::from_rotation_y(0.);
         let make_light = |pos: Vec3, col: Vec3| Light {
             pos: pos.extend(0.),
             // transform: Mat4::look_at_rh(pos, vec3(-1., 0., 5.), Vec3::Y),
-            transform: look_at(pos, vec3(0., 0., 0.), Vec3::Y),
+            transform: Mat4::look_at_rh(pos, vec3(0., 0., 0.), Vec3::Y),
             color: col.extend(0.),
         };
-        let scale = Mat4::from_scale(vec3(5., 5., 5.));
         let scale = Mat4::from_scale(Vec3::splat(1.));
-        let light_pos = rot * scale * Mat4::from_translation(vec3(1., 1., 1.));
+        let light_pos = rot * scale * Mat4::from_translation(vec3(1., 1., -1.));
         lights[0] = make_light(
             light_pos.transform_point3(vec3(0., 0., 0.)),
-            vec3(1., 0., 0.),
+            vec3(0.5, 0., 0.5),
         );
-        let light_pos = rot * scale * Mat4::from_translation(vec3(-1., 1., 1.));
+        let light_pos = rot * scale * Mat4::from_translation(vec3(-1., 1., -1.));
         lights[1] = make_light(
             light_pos.transform_point3(vec3(0., 0., 0.)),
-            vec3(0., 1., 0.),
+            vec3(1., 0.5, 0.),
         );
         let light_pos = rot * scale * Mat4::from_translation(vec3(1., -1., 1.));
         lights[2] = make_light(

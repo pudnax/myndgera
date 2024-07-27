@@ -147,9 +147,8 @@ macro_rules! missing_math {
 }
 missing_math!(i32, u32, i64, u64, usize);
 
-pub fn dispatch_optimal(len: u32, subgroup_size: u32) -> u32 {
-    let padded_size = (subgroup_size - len % subgroup_size) % subgroup_size;
-    (len + padded_size) / subgroup_size
+pub fn dispatch_optimal(len: u32, workgroup_size: u32) -> u32 {
+    (len + workgroup_size - 1) / workgroup_size
 }
 
 pub fn save_shaders<P: AsRef<Path>>(path: P) -> anyhow::Result<()> {
