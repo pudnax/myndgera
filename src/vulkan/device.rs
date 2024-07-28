@@ -506,7 +506,6 @@ pub struct Buffer {
     pub size: u64,
     pub buffer: vk::Buffer,
     pub memory: ManuallyDrop<Allocation>,
-    // pub data: Option<&'static mut [u8]>,
     device: Arc<Device>,
 }
 

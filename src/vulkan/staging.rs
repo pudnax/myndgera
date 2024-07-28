@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 
-use super::Device;
+use crate::{Buffer, Device};
+
+const INITIAL_BUFFER_SIZE: u64 = 1024;
 
 struct PendingWrite {
     region: vk::BufferCopy2<'static>,
@@ -12,18 +14,16 @@ struct PendingWrite {
 }
 
 pub struct StagingWrite {
-    buffer: crate::Buffer,
+    buffer: Buffer,
     intermediate_data: Vec<u8>,
     pending_writes: Vec<PendingWrite>,
-    size: usize,
     device: Arc<Device>,
 }
 
 impl StagingWrite {
     pub fn new(device: &Arc<Device>) -> Result<Self> {
-        let size = 4;
         let buffer = device.create_buffer(
-            size,
+            INITIAL_BUFFER_SIZE,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
         )?;
@@ -31,14 +31,8 @@ impl StagingWrite {
             buffer,
             intermediate_data: vec![],
             pending_writes: vec![],
-            size: size as _,
             device: device.clone(),
         })
-    }
-
-    pub fn clear(&mut self) {
-        self.intermediate_data.clear();
-        self.pending_writes.clear();
     }
 
     pub fn write_buffer(&mut self, buffer: vk::Buffer, data: &[u8]) {
@@ -53,9 +47,9 @@ impl StagingWrite {
         self.intermediate_data.extend(data);
     }
 
-    pub fn reserve_buffer(&mut self) -> Result<bool> {
+    pub fn reserve_storage(&mut self) -> Result<bool> {
         let offset = self.intermediate_data.len();
-        if offset < self.size {
+        if offset < self.buffer.size as usize {
             return Ok(false);
         }
 
@@ -68,13 +62,11 @@ impl StagingWrite {
             .checked_next_power_of_two()
             .unwrap_or(offset)
             .min(max_buffer_size as usize);
-        let new_buffer = self.device.create_buffer(
+        self.buffer = self.device.create_buffer(
             new_size as u64,
             vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryLocation::CpuToGpu,
         )?;
-        self.buffer = new_buffer;
-        self.size = new_size;
 
         Ok(true)
     }
@@ -83,15 +75,17 @@ impl StagingWrite {
         if self.pending_writes.is_empty() {
             return Ok(());
         }
+        self.reserve_storage()?;
         let mapped = self.buffer.map_memory().context("Failed to map memory")?;
         mapped[..self.intermediate_data.len()].copy_from_slice(&self.intermediate_data);
-        for write in &self.pending_writes {
+        for write in self.pending_writes.drain(..) {
             let copy_info = vk::CopyBufferInfo2::default()
                 .src_buffer(self.buffer.buffer)
                 .dst_buffer(write.buffer)
                 .regions(std::slice::from_ref(&write.region));
             unsafe { self.device.cmd_copy_buffer2(cbuff, &copy_info) };
         }
+        self.intermediate_data.clear();
         Ok(())
     }
 }

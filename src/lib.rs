@@ -350,7 +350,6 @@ impl<E: Example> AppInit<E> {
 
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
-            state.staging_write.clear();
             self.device
                 .one_time_submit(&self.render.queue, |device, cbuff| {
                     let _marker = device.create_scoped_marker(&cbuff, "State Update");
@@ -358,7 +357,6 @@ impl<E: Example> AppInit<E> {
                     state.update(&self.render, &cbuff)?;
                     self.example.update(&self.render, state, &cbuff)?;
 
-                    state.staging_write.reserve_buffer()?;
                     state.staging_write.consume_pending_writes(&cbuff)?;
 
                     Ok(())
