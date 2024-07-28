@@ -1,3 +1,5 @@
+// https://github.com/JuanDiegoMontoya/Frogfood/blob/main/src/techniques/Bloom.cpp
+
 use std::{mem, sync::Arc};
 
 use anyhow::Result;
