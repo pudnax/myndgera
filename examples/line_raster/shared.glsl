@@ -1,10 +1,9 @@
 const float goldenAngle = 2.3999632297286533;
-const float RAY_COLOR_RANGE = 5000.;
+const float RAY_COLOR_RANGE = 10000.;
 
 struct Light {
-    vec4 pos;
-    vec4 color;
     mat4 transform;
+    vec4 color;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer Lights {
@@ -28,7 +27,7 @@ float sd_box(vec3 p, vec3 h) {
     return length(max(p, 0.)) + min(0., max(p.x, max(p.y, p.z)));
 }
 
-#define ITERS 5
+#define ITERS 4
 #define SCALE 3.
 #define MR2 0.25
 vec4 scalevec = vec4(SCALE, SCALE, SCALE, abs(SCALE)) / MR2;
@@ -50,12 +49,14 @@ float mandelbox(vec3 position) {
 
 float sdf_model(vec3 p) {
     float width = 2.5;
-    float d = sd_box(p, vec3(width));
+    float d = 1e9; // sd_box(p, vec3(width));
     // d = length(p) - width;
-    d = mandelbox(p);
+    float box = mandelbox(p);
+    // box = abs(box) - 0.02;
+    d = box;
     // d = abs(d) - 0.01;
 
-    d = min(d, abs(sd_box(p, vec3(4.))) - 0.01);
+    // d = min(d, abs(sd_box(p, vec3(5.0))) - 0.01);
     return d;
 }
 
@@ -67,10 +68,10 @@ vec3 get_norm(vec3 p) {
 
 vec2 trace(vec3 eye, vec3 dir) {
     float t = 0.;
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 100; i++) {
         vec3 pos = eye + dir * t;
         float d = sdf_model(pos);
-        if ((d) < 0.01) { return vec2(t, 1.); }
+        if (abs(d) < 0.01) { return vec2(t, 1.); }
         t += d;
         if (t > 500.) { return vec2(t, 0.); }
     }

@@ -1,3 +1,4 @@
+use core::f32;
 use std::{mem, sync::Arc};
 
 use anyhow::{Ok, Result};
@@ -7,11 +8,14 @@ use glam::{vec3, Mat4, Vec2, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use myndgera::*;
 
-use self::bloom::{Bloom, BloomParams};
+use self::{
+    bloom::{Bloom, BloomParams},
+    math::{cos, erot, hash13, look_at, sin, smooth_floor},
+};
 
-const NUM_LIGHTS: u32 = 3;
-const NUM_RAYS: u32 = 1000 * NUM_LIGHTS;
-const NUM_BOUNCES: u32 = 15;
+const NUM_LIGHTS: u32 = 4;
+const NUM_RAYS: u32 = 10000 * NUM_LIGHTS;
+const NUM_BOUNCES: u32 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -23,9 +27,8 @@ struct GpuBuffer<T: Copy, const N: usize = 1> {
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
 struct Light {
-    pos: Vec4,
-    color: Vec4,
     transform: Mat4,
+    color: Vec4,
 }
 
 #[repr(C)]
@@ -268,30 +271,25 @@ impl Example for LineRaster {
         state: &mut AppState,
         &cbuff: &vk::CommandBuffer,
     ) -> Result<()> {
+        let time = state.stats.time;
         let mut lights = [Light::default(); NUM_LIGHTS as usize];
-        let rot = Mat4::from_rotation_y(state.stats.time);
-        let make_light = |pos: Vec3, col: Vec3| Light {
-            pos: pos.extend(0.),
-            // transform: Mat4::look_at_rh(pos, vec3(-1., 0., 5.), Vec3::Y),
-            transform: Mat4::look_at_rh(pos, vec3(0., 0., 0.), Vec3::Y),
+        let make_light = |tr: Mat4, col: Vec3| Light {
+            transform: tr,
             color: col.extend(0.),
         };
-        let scale = Mat4::from_scale(Vec3::splat(1.));
-        let light_pos = rot * scale * Mat4::from_translation(vec3(1., 1., -1.));
-        lights[0] = make_light(
-            light_pos.transform_point3(vec3(0., 0., 0.)),
-            vec3(0.5, 0., 0.5),
-        );
-        let light_pos = rot * scale * Mat4::from_translation(vec3(-1., 1., -1.));
-        lights[1] = make_light(
-            light_pos.transform_point3(vec3(0., 0., 0.)),
-            vec3(1., 0.5, 0.),
-        );
-        let light_pos = rot * scale * Mat4::from_translation(vec3(1., -1., 1.));
-        lights[2] = make_light(
-            light_pos.transform_point3(vec3(0., 0., 0.)),
-            vec3(0., 0., 1.),
-        );
+        let time = smooth_floor(time, 2.);
+        let tr = |pos, i| {
+            let coeffs = hash13(i as f32) * 2. - 1.;
+            let t = smooth_floor(time * 0.05, 2.) * f32::consts::TAU;
+            let ax = coeffs * vec3(sin(-time / 2.), sin(time), cos(time));
+            let rot = Mat4::from_axis_angle(ax.normalize(), t);
+            rot * Mat4::from_scale(Vec3::splat(4.2))
+                * look_at(pos, erot(-pos * 0.5, ax.normalize(), t))
+        };
+        lights[0] = make_light(tr(vec3(1., 1., -1.), 0), vec3(1., 1., 1.));
+        lights[1] = make_light(tr(vec3(-1., 1., -1.), 1), vec3(1., 0., 0.));
+        lights[2] = make_light(tr(vec3(1., -1., 1.), 2), vec3(1., 0., 0.));
+        lights[3] = make_light(tr(vec3(1., -1., -1.), 3), vec3(1., 1., 1.));
 
         let buffer_data = GpuBuffer {
             size: lights.len() as u32,
@@ -485,7 +483,7 @@ impl Example for LineRaster {
                 target_image_sampled: self.hdr_sampled_idx,
                 target_image_storage: self.hdr_storage_idx,
                 target_current_layout: vk::ImageLayout::GENERAL,
-                strength: 4. / 16.,
+                strength: 0.1 / 16.,
                 width: 2.,
             },
         );

@@ -66,7 +66,7 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
 
     vec4 blue_noise = read_blue_noise(ivec2(gl_GlobalInvocationID.x, 0.));
 
-    float n = 250.;
+    float n = 25;
     float step = ray_len / n;
     step = step + (blue_noise.x * 2. - 1.) * step / 2.;
     step = max(step, sqrt(1.));
@@ -74,7 +74,7 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
         vec2 p = ray_start + ray_dir * s;
         ivec2 pix = ivec2(p);
         vec3 col = ray.color.rgb * ray.color.w;
-        if (!in_bounds(pix, dims)) { continue; }
+        // if (!in_bounds(pix, dims)) { continue; }
         draw_point(pix, col);
     }
 }
