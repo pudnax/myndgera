@@ -1,5 +1,9 @@
 use core::f32;
-use std::{mem, sync::Arc};
+use std::{
+    f32::consts::{PI, TAU},
+    mem,
+    sync::Arc,
+};
 
 use anyhow::{Ok, Result};
 use ash::vk;
@@ -14,7 +18,7 @@ use self::{
 };
 
 const NUM_LIGHTS: u32 = 4;
-const NUM_RAYS: u32 = 10000 * NUM_LIGHTS;
+const NUM_RAYS: u32 = 12500 * NUM_LIGHTS;
 const NUM_BOUNCES: u32 = 8;
 
 #[repr(C)]
@@ -45,6 +49,7 @@ struct SpawnPC {
     num_rays: u32,
     num_bounces: u32,
     time: f32,
+    noise_offset: Vec2,
     line_buffer: u64,
     lights_buffer: u64,
 }
@@ -125,7 +130,7 @@ impl Example for LineRaster {
         let spawn_pass = state.pipeline_arena.create_compute_pipeline(
             "examples/line_raster/spawn.comp",
             &[push_constant_range],
-            &[],
+            &[state.texture_arena.sampled_set_layout],
         )?;
 
         let push_constant_range = vk::PushConstantRange::default()
@@ -277,25 +282,24 @@ impl Example for LineRaster {
             transform: tr,
             color: col.extend(0.),
         };
-        let time = smooth_floor(time, 2.);
         let tr = |pos, i| {
-            let coeffs = hash13(i as f32) * 2. - 1.;
-            let t = smooth_floor(time * 0.05, 2.) * f32::consts::TAU;
-            let ax = coeffs * vec3(sin(-time / 2.), sin(time), cos(time));
+            let i = i as f32;
+            let coeffs = hash13(i + 33.42) * 2. - 1.;
+            let t = smooth_floor(time * 0.15 + 20. + i * 2.5, 3.);
+            let ax = coeffs * vec3(sin(-t), cos(t), sin(t + PI / 2.));
             let rot = Mat4::from_axis_angle(ax.normalize(), t);
-            rot * Mat4::from_scale(Vec3::splat(4.2))
-                * look_at(pos, erot(-pos * 0.5, ax.normalize(), t))
+            rot * Mat4::from_scale(Vec3::splat(3.))
+                * look_at(pos, erot(-pos * 0.5, ax.normalize(), (t) + 0.5))
         };
-        lights[0] = make_light(tr(vec3(1., 1., -1.), 0), vec3(1., 1., 1.));
-        lights[1] = make_light(tr(vec3(-1., 1., -1.), 1), vec3(1., 0., 0.));
-        lights[2] = make_light(tr(vec3(1., -1., 1.), 2), vec3(1., 0., 0.));
-        lights[3] = make_light(tr(vec3(1., -1., -1.), 3), vec3(1., 1., 1.));
+        lights[0] = make_light(tr(vec3(1., 1.5, -1.5), 0), vec3(1., 1., 1.));
+        lights[1] = make_light(tr(vec3(-1.5, 1., -1.), 1), vec3(1., 0., 0.));
+        lights[2] = make_light(tr(vec3(1.5, -1., 1.), 2), vec3(1., 0., 0.));
+        lights[3] = make_light(tr(vec3(1., -1., -1.5), 3), vec3(1., 1., 1.));
 
         let buffer_data = GpuBuffer {
             size: lights.len() as u32,
             data: lights,
         };
-
         state
             .staging_write
             .write_buffer(self.lights_buffer.buffer, bytes_of(&buffer_data));
@@ -305,10 +309,19 @@ impl Example for LineRaster {
             num_rays: NUM_RAYS,
             num_bounces: NUM_BOUNCES,
             time: state.stats.time,
+            noise_offset: rand::random::<Vec2>(),
             lights_buffer: self.lights_buffer.address,
             line_buffer: self.lines_buffer.address,
         };
         unsafe {
+            ctx.device.cmd_bind_descriptor_sets(
+                cbuff,
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                0,
+                &[state.texture_arena.sampled_set],
+                &[],
+            );
             ctx.device.cmd_push_constants(
                 cbuff,
                 pipeline.layout,
@@ -483,7 +496,7 @@ impl Example for LineRaster {
                 target_image_sampled: self.hdr_sampled_idx,
                 target_image_storage: self.hdr_storage_idx,
                 target_current_layout: vk::ImageLayout::GENERAL,
-                strength: 0.1 / 16.,
+                strength: 4. / 16.,
                 width: 2.,
             },
         );

@@ -68,10 +68,10 @@ vec3 get_norm(vec3 p) {
 
 vec2 trace(vec3 eye, vec3 dir) {
     float t = 0.;
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 50; i++) {
         vec3 pos = eye + dir * t;
         float d = sdf_model(pos);
-        if (abs(d) < 0.01) { return vec2(t, 1.); }
+        if (abs(d) < 0.001) { return vec2(t, 1.); }
         t += d;
         if (t > 500.) { return vec2(t, 0.); }
     }
