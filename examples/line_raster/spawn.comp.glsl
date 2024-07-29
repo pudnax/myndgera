@@ -100,7 +100,7 @@ void main() {
         vec3 nor = get_norm(end);
 
         // float throughput = 1. - float(i) / float(pc.num_bounces);
-        Ray ray = Ray(vec4(col * 0.015, throughput), vec3(origin), vec3(end));
+        Ray ray = Ray(vec4(col * 0.025, throughput), vec3(origin), vec3(end));
         pc.rays_ptr.rays[ray_idx + i] = ray;
         throughput *= 0.97;
 

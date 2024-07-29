@@ -128,7 +128,7 @@ impl Example for LineRaster {
             .size(size_of::<SpawnPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
         let spawn_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/spawn.comp",
+            "examples/line_raster/spawn.comp.glsl",
             &[push_constant_range],
             &[state.texture_arena.sampled_set_layout],
         )?;
@@ -137,7 +137,7 @@ impl Example for LineRaster {
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
         let clear_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/clear.comp",
+            "examples/line_raster/clear.comp.glsl",
             &[push_constant_range],
             &[state.texture_arena.storage_set_layout],
         )?;
@@ -145,7 +145,7 @@ impl Example for LineRaster {
             .size(size_of::<RasterPC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
         let raster_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/raster.comp",
+            "examples/line_raster/raster.comp.glsl",
             &[push_constant_range],
             &[
                 state.texture_arena.sampled_set_layout,
@@ -157,7 +157,7 @@ impl Example for LineRaster {
             .size(size_of::<ResolvePC>() as _)
             .stage_flags(vk::ShaderStageFlags::COMPUTE);
         let resolve_pass = state.pipeline_arena.create_compute_pipeline(
-            "examples/line_raster/resolve.comp",
+            "examples/line_raster/resolve.comp.glsl",
             &[push_constant_range],
             &[
                 state.texture_arena.sampled_set_layout,
@@ -170,7 +170,7 @@ impl Example for LineRaster {
             ..Default::default()
         };
         let fragment_shader_desc = FragmentShaderDesc {
-            shader_path: "examples/line_raster/postprocess.frag".into(),
+            shader_path: "examples/line_raster/postprocess.frag.glsl".into(),
         };
         let fragment_output_desc = FragmentOutputDesc {
             surface_format: ctx.swapchain.format(),
