@@ -3,24 +3,23 @@ use std::{mem::ManuallyDrop, sync::Arc};
 use anyhow::{Context, Result};
 use ash::vk::{self, Handle};
 use gpu_allocator::{vulkan::Allocation, MemoryLocation};
+use slotmap::{SecondaryMap, SlotMap};
 
 use crate::align_to;
 
-use super::{Device, Swapchain};
+use super::Device;
 
 const SAMPLER_SET: u32 = 0;
 const IMAGE_SET: u32 = 1;
+const STORAGE_SET: u32 = 0;
 
 const LINEAR_SAMPLER_IDX: u32 = 0;
 const NEAREST_SAMPLER_IDX: u32 = 1;
 
 pub const DUMMY_IMAGE_IDX: usize = 0;
-pub const PREV_FRAME_IDX: usize = 1;
-pub const DITHER_IMAGE_IDX: usize = 2;
-pub const NOISE_IMAGE_IDX: usize = 3;
-pub const BLUE_IMAGE_IDX: usize = 4;
-
-pub const SCREENSIZED_IMAGE_INDICES: [usize; 1] = [PREV_FRAME_IDX];
+pub const DITHER_IMAGE_IDX: usize = 1;
+pub const NOISE_IMAGE_IDX: usize = 2;
+pub const BLUE_IMAGE_IDX: usize = 3;
 
 const IMAGES_COUNT: u32 = 2048;
 const STORAGE_COUNT: u32 = 2048;
@@ -94,46 +93,88 @@ impl Drop for ManagedImage {
     }
 }
 
+const MAX_MIPCOUNT: usize = 8;
+
+slotmap::new_key_type! {
+    pub struct ImageHandle;
+}
+
+pub enum ScreenRelation {
+    Identity,
+    Half,
+    Quarter,
+    None,
+}
+
+impl ScreenRelation {
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Self::Identity => Some(1.),
+            Self::Half => Some(0.5),
+            Self::Quarter => Some(0.25),
+            Self::None => None,
+        }
+    }
+}
+
+// TODO: Name Images
+pub struct Image {
+    pub inner: vk::Image,
+    pub views: [Option<vk::ImageView>; MAX_MIPCOUNT],
+    pub info: Option<vk::ImageCreateInfo<'static>>,
+    memory: Option<Allocation>,
+}
+
+impl Image {
+    fn destroy(&mut self, device: &Device) {
+        if let Some(memory) = self.memory.take() {
+            device.destroy_image(self.inner, memory);
+            for view in self
+                .views
+                .iter()
+                .filter_map(|view| view.as_ref())
+                .filter(|view| !view.is_null())
+            {
+                // TODO: After naming check exactly what views are being destroyed
+                unsafe { device.destroy_image_view(*view, None) };
+            }
+        }
+    }
+}
+
 pub struct TextureArena {
-    pub sampled_images: Vec<vk::Image>,
-    pub sampled_memories: Vec<Option<Allocation>>,
-    pub sampled_infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
-    pub sampled_views: Vec<vk::ImageView>,
-    pub sampled_set: vk::DescriptorSet,
-    pub sampled_set_layout: vk::DescriptorSetLayout,
+    pub images: SlotMap<ImageHandle, Image>,
+    pub sampled_indices: SecondaryMap<ImageHandle, [Option<u32>; MAX_MIPCOUNT]>,
+    pub storage_indices: SecondaryMap<ImageHandle, [Option<u32>; MAX_MIPCOUNT]>,
+    last_sampled_idx: u32,
+    last_storage_idx: u32,
 
-    pub storage_images: Vec<vk::Image>,
-    pub storage_memory: Vec<Option<Allocation>>,
-    pub storage_infos: Vec<Option<vk::ImageCreateInfo<'static>>>,
-    pub storage_views: Vec<vk::ImageView>,
-    pub storage_set: vk::DescriptorSet,
-    pub storage_set_layout: vk::DescriptorSetLayout,
-
-    pub external_sampled_img_idx: Vec<u32>,
-    pub external_storage_img_idx: Vec<u32>,
+    screen_sized_images: SecondaryMap<ImageHandle, f32>,
+    default_images: Vec<ImageHandle>,
 
     pub samplers: [vk::Sampler; SAMPLER_COUNT as usize],
+
+    pub sampled_set: vk::DescriptorSet,
+    pub sampled_set_layout: vk::DescriptorSetLayout,
+    pub storage_set: vk::DescriptorSet,
+    pub storage_set_layout: vk::DescriptorSetLayout,
 
     descriptor_pool: vk::DescriptorPool,
     device: Arc<Device>,
 }
 
 impl TextureArena {
-    pub fn image_count(&self) -> usize {
-        self.sampled_images.len()
-    }
-
-    pub fn new(device: &Arc<Device>, swapchain: &Swapchain, queue: &vk::Queue) -> Result<Self> {
+    pub fn new(device: &Arc<Device>, queue: &vk::Queue) -> Result<Self> {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(IMAGES_COUNT),
+                .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLER)
-                .descriptor_count(STORAGE_COUNT),
+                .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLER)
-                .descriptor_count(SAMPLER_COUNT),
+                .descriptor_count(1),
         ];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
@@ -201,7 +242,7 @@ impl TextureArena {
         let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
             .binding_flags(std::slice::from_ref(&binding_flags));
         let storage_set_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
+            .binding(STORAGE_SET)
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS | vk::ShaderStageFlags::COMPUTE)
             .descriptor_count(
@@ -232,9 +273,9 @@ impl TextureArena {
             .min_filter(vk::Filter::LINEAR)
             .mag_filter(vk::Filter::LINEAR)
             .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::MIRRORED_REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::MIRRORED_REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::MIRRORED_REPEAT)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .max_lod(vk::LOD_CLAMP_NONE);
         let sampler = unsafe { device.create_sampler(&sampler_create_info, None)? };
         let descriptor_image_info = vk::DescriptorImageInfo::default().sampler(sampler);
@@ -259,22 +300,25 @@ impl TextureArena {
         samplers[NEAREST_SAMPLER_IDX as usize] = sampler;
 
         let mut texture_arena = Self {
-            sampled_images: vec![],
-            sampled_memories: vec![],
-            sampled_infos: vec![],
-            sampled_views: vec![],
+            images: SlotMap::with_key(),
+            sampled_indices: SecondaryMap::new(),
+            storage_indices: SecondaryMap::new(),
+
+            last_sampled_idx: 0,
+            last_storage_idx: 0,
+
+            screen_sized_images: SecondaryMap::new(),
+            default_images: vec![],
+
             samplers,
-            descriptor_pool,
+
             sampled_set,
             sampled_set_layout,
-            storage_images: vec![],
-            storage_views: vec![],
-            storage_memory: vec![],
-            storage_infos: vec![],
             storage_set,
             storage_set_layout,
-            external_storage_img_idx: vec![],
-            external_sampled_img_idx: vec![],
+
+            descriptor_pool,
+
             device: device.clone(),
         };
 
@@ -291,21 +335,17 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        texture_arena.push_image(queue, image_info, &[255, 255, 0, 255])?;
-
-        let image_infos: [_; SCREENSIZED_IMAGE_INDICES.len()] = std::array::from_fn(|_| {
-            image_info.extent(vk::Extent3D {
-                width: swapchain.extent.width,
-                height: swapchain.extent.height,
-                depth: 1,
-            })
-        });
-
-        for info in image_infos {
-            let (image, memory) = device.create_image(&info, MemoryLocation::GpuOnly)?;
-            let view = device.create_2d_view(&image, info.format, 0)?;
-            texture_arena.push_sampled_image(image, view, Some(memory), Some(info));
-        }
+        let handle = texture_arena.push_image(
+            queue,
+            image_info,
+            ScreenRelation::None,
+            &[255, 255, 0, 255],
+        )?;
+        texture_arena.default_images.push(handle);
+        assert_eq!(
+            DUMMY_IMAGE_IDX as u32,
+            texture_arena.get_sampled_idx(handle, 0)
+        );
 
         let bytes = include_bytes!("../../assets/dither.dds");
         let dds = ddsfile::Dds::read(&bytes[..])?;
@@ -323,14 +363,15 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
-        texture_arena.device.name_object(
-            texture_arena.sampled_images[DITHER_IMAGE_IDX],
-            "Dither Image",
-        );
-        texture_arena.device.name_object(
-            texture_arena.sampled_views[DITHER_IMAGE_IDX],
-            "Dither Image View",
+        let handle =
+            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        texture_arena.default_images.push(handle);
+        texture_arena
+            .device
+            .name_object(texture_arena.images[handle].inner, "Dither Image");
+        assert_eq!(
+            DITHER_IMAGE_IDX as u32,
+            texture_arena.get_sampled_idx(handle, 0)
         );
 
         let bytes = include_bytes!("../../assets/noise.dds");
@@ -338,13 +379,15 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
+        let handle =
+            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        texture_arena.default_images.push(handle);
         texture_arena
             .device
-            .name_object(texture_arena.sampled_images[NOISE_IMAGE_IDX], "Noise Image");
-        texture_arena.device.name_object(
-            texture_arena.sampled_views[NOISE_IMAGE_IDX],
-            "Noise Image View",
+            .name_object(texture_arena.images[handle].inner, "Noise Image");
+        assert_eq!(
+            NOISE_IMAGE_IDX as u32,
+            texture_arena.get_sampled_idx(handle, 0)
         );
 
         let bytes = include_bytes!("../../assets/BLUE_RGBA_0.dds");
@@ -352,162 +395,339 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        texture_arena.push_image(queue, info, dds.get_data(0)?)?;
-        texture_arena.device.name_object(
-            texture_arena.sampled_images[BLUE_IMAGE_IDX],
-            "Blue Noise Image",
+        let handle =
+            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        texture_arena.default_images.push(handle);
+        texture_arena
+            .device
+            .name_object(texture_arena.images[handle].inner, "Blue Noise Image");
+        assert_eq!(
+            BLUE_IMAGE_IDX as u32,
+            texture_arena.get_sampled_idx(handle, 0)
         );
-        texture_arena.device.name_object(
-            texture_arena.sampled_views[BLUE_IMAGE_IDX],
-            "Blue Noise Image View",
-        );
-
-        for (image, view) in swapchain.images.iter().zip(&swapchain.views) {
-            texture_arena.push_sampled_image(*image, *view, None, None);
-            texture_arena.push_storage_image(*image, *view, None, None);
-        }
 
         Ok(texture_arena)
     }
 
-    pub fn push_sampled_image(
-        &mut self,
-        image: vk::Image,
-        view: vk::ImageView,
-        memory: Option<Allocation>,
-        info: Option<vk::ImageCreateInfo<'static>>,
-    ) -> u32 {
-        if let (Some(_), None) | (None, Some(_)) = (&info, &memory) {
-            panic!("Both image info and memory have to be present or elided")
-        }
-        let idx = self.sampled_images.len() as u32;
-        self.sampled_images.push(image);
-        self.sampled_views.push(view);
-        self.sampled_memories.push(memory);
-        self.sampled_infos.push(info);
-
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_view(view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.sampled_set)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .dst_binding(IMAGE_SET)
-            .image_info(std::slice::from_ref(&image_info))
-            .dst_array_element(idx);
-        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
-
-        if info.is_none() {
-            self.external_sampled_img_idx.push(idx);
-        }
-
-        idx
+    pub fn get_image(&self, handle: ImageHandle) -> &Image {
+        &self.images[handle]
     }
 
-    pub fn push_storage_image(
-        &mut self,
-        image: vk::Image,
-        view: vk::ImageView,
-        memory: Option<Allocation>,
-        info: Option<vk::ImageCreateInfo<'static>>,
-    ) -> u32 {
-        if let (Some(_), None) | (None, Some(_)) = (&info, &memory) {
-            panic!("Both image info and memory have to be present or elided")
+    pub fn get_image_mut(&mut self, handle: ImageHandle) -> &mut Image {
+        &mut self.images[handle]
+    }
+
+    pub fn get_sampled_idx(&mut self, handle: ImageHandle, mip_level: u32) -> u32 {
+        match self.sampled_indices[handle][mip_level as usize] {
+            Some(idx) => idx,
+            None => {
+                let image = &mut self.images[handle];
+                let view = if let Some(view) = image.views[mip_level as usize] {
+                    view
+                } else {
+                    let view = unsafe {
+                        self.device
+                            .create_image_view(
+                                &vk::ImageViewCreateInfo::default()
+                                    .view_type(vk::ImageViewType::TYPE_2D)
+                                    .image(image.inner)
+                                    .format(image.info.unwrap().format)
+                                    .subresource_range(
+                                        vk::ImageSubresourceRange::default()
+                                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                            .base_mip_level(mip_level)
+                                            .level_count(if mip_level == 0 {
+                                                vk::REMAINING_MIP_LEVELS
+                                            } else {
+                                                1
+                                            })
+                                            .base_array_layer(0)
+                                            .layer_count(vk::REMAINING_ARRAY_LAYERS),
+                                    ),
+                                None,
+                            )
+                            .unwrap()
+                    };
+                    image.views[mip_level as usize] = Some(view);
+                    view
+                };
+
+                let sampled_idx = self.last_sampled_idx;
+                self.update_sampled_image(sampled_idx, &view);
+                self.sampled_indices[handle][mip_level as usize] = Some(sampled_idx);
+                self.last_sampled_idx += 1;
+
+                sampled_idx
+            }
         }
-        let idx = self.storage_images.len() as u32;
-        self.storage_images.push(image);
-        self.storage_views.push(view);
-        self.storage_memory.push(memory);
-        self.storage_infos.push(info);
+    }
 
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_view(view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.storage_set)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(0)
-            .image_info(std::slice::from_ref(&image_info))
-            .dst_array_element(idx);
-        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
-
-        if info.is_none() {
-            self.external_storage_img_idx.push(idx);
+    pub fn get_storage_idx(&mut self, handle: ImageHandle, mip_level: u32) -> u32 {
+        if let Some(info) = self.images[handle].info {
+            assert!(info.usage.contains(vk::ImageUsageFlags::STORAGE));
         }
+        match self.storage_indices[handle][mip_level as usize] {
+            Some(idx) => idx,
+            None => {
+                let image = &mut self.images[handle];
+                let view = if let Some(view) = image.views[mip_level as usize] {
+                    view
+                } else {
+                    let view = unsafe {
+                        self.device
+                            .create_image_view(
+                                &vk::ImageViewCreateInfo::default()
+                                    .view_type(vk::ImageViewType::TYPE_2D)
+                                    .image(image.inner)
+                                    .format(image.info.unwrap().format)
+                                    .subresource_range(
+                                        vk::ImageSubresourceRange::default()
+                                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                            .base_mip_level(if mip_level == 0 {
+                                                vk::REMAINING_MIP_LEVELS
+                                            } else {
+                                                1
+                                            })
+                                            .level_count(1)
+                                            .base_array_layer(0)
+                                            .layer_count(vk::REMAINING_ARRAY_LAYERS),
+                                    ),
+                                None,
+                            )
+                            .unwrap()
+                    };
+                    image.views[mip_level as usize] = Some(view);
+                    view
+                };
 
-        idx
+                let storage_idx = self.last_storage_idx;
+                self.update_storage_image(storage_idx, &view);
+                self.storage_indices[handle][mip_level as usize] = Some(storage_idx);
+                self.last_storage_idx += 1;
+
+                storage_idx
+            }
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        for (handle, &factor) in self.screen_sized_images.iter() {
+            let image = &mut self.images[handle];
+            let Some(info) = image.info.as_mut() else {
+                continue;
+            };
+            let usage = info.usage;
+            info.extent.width = (factor * width as f32) as u32;
+            info.extent.height = (factor * height as f32) as u32;
+
+            let (new_image, new_memory) =
+                self.device.create_image(&info, MemoryLocation::GpuOnly)?;
+            image.destroy(&self.device);
+            image.inner = new_image;
+            image.memory = Some(new_memory);
+
+            for (mip_level, view) in image
+                .views
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(i, view)| view.as_mut().map(|v| (i, v)))
+            {
+                *view = unsafe {
+                    self.device.create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .image(image.inner)
+                            .format(image.info.unwrap().format)
+                            .subresource_range(
+                                vk::ImageSubresourceRange::default()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .base_mip_level(mip_level as u32)
+                                    .level_count(if mip_level == 0 {
+                                        vk::REMAINING_MIP_LEVELS
+                                    } else {
+                                        1
+                                    })
+                                    .base_array_layer(0)
+                                    .layer_count(vk::REMAINING_ARRAY_LAYERS),
+                            ),
+                        None,
+                    )?
+                };
+
+                if let Some(idx) = self.sampled_indices[handle][mip_level] {
+                    let image_info = vk::DescriptorImageInfo::default()
+                        .image_view(*view)
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                    let write = vk::WriteDescriptorSet::default()
+                        .dst_set(self.sampled_set)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .dst_binding(IMAGE_SET)
+                        .image_info(std::slice::from_ref(&image_info))
+                        .dst_array_element(idx);
+                    unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+                }
+                if usage.contains(vk::ImageUsageFlags::STORAGE) {
+                    if let Some(idx) = self.storage_indices[handle][mip_level] {
+                        let image_info = vk::DescriptorImageInfo::default()
+                            .image_view(*view)
+                            .image_layout(vk::ImageLayout::GENERAL);
+                        let write = vk::WriteDescriptorSet::default()
+                            .dst_set(self.storage_set)
+                            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                            .dst_binding(STORAGE_SET)
+                            .image_info(std::slice::from_ref(&image_info))
+                            .dst_array_element(idx);
+                        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn push_image(
         &mut self,
         queue: &vk::Queue,
-        info: vk::ImageCreateInfo<'static>,
+        mut info: vk::ImageCreateInfo<'static>,
+        screen_relation: ScreenRelation,
         data: &[u8],
-    ) -> Result<u32> {
+    ) -> Result<ImageHandle> {
+        if !data.is_empty() {
+            info.usage |= vk::ImageUsageFlags::TRANSFER_DST;
+        }
+        if let Some(factor) = screen_relation.as_f32() {
+            info.extent.width = (factor * info.extent.width as f32) as u32;
+            info.extent.height = (factor * info.extent.height as f32) as u32;
+        }
         let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
 
-        let mut staging = self.device.create_buffer(
-            memory.size(),
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryLocation::CpuToGpu,
-        )?;
-        let mapped = staging.map_memory().context("Failed to map memory")?;
-        mapped[..data.len()].copy_from_slice(data);
+        if !data.is_empty() {
+            let mut staging = self.device.create_buffer(
+                memory.size(),
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                MemoryLocation::CpuToGpu,
+            )?;
+            let mapped = staging.map_memory().context("Failed to map memory")?;
+            mapped[..data.len()].copy_from_slice(data);
 
-        self.device.one_time_submit(queue, |device, cbuff| unsafe {
-            device.image_transition(
-                &cbuff,
-                &image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            let regions = vk::BufferImageCopy::default()
-                .image_extent(info.extent)
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                    mip_level: 0,
-                });
-            device.cmd_copy_buffer_to_image(
-                cbuff,
-                staging.buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[regions],
-            );
-            device.image_transition(
-                &cbuff,
-                &image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            );
-            Ok(())
-        })?;
+            self.device.one_time_submit(queue, |device, cbuff| unsafe {
+                device.image_transition(
+                    &cbuff,
+                    &image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
+                let regions = vk::BufferImageCopy::default()
+                    .image_extent(info.extent)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                        mip_level: 0,
+                    });
+                device.cmd_copy_buffer_to_image(
+                    cbuff,
+                    staging.buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[regions],
+                );
+                device.image_transition(
+                    &cbuff,
+                    &image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+                Ok(())
+            })?;
+        }
 
         let view = self.device.create_2d_view(&image, info.format, 0)?;
-        let idx = self.sampled_images.len() as u32;
+        let mut views = [None; MAX_MIPCOUNT];
+        views[0] = Some(view);
+        let handle = self.images.insert(Image {
+            inner: image,
+            views,
+            info: Some(info),
+            memory: Some(memory),
+        });
 
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_view(view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.sampled_set)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .dst_binding(IMAGE_SET)
-            .image_info(std::slice::from_ref(&image_info))
-            .dst_array_element(idx);
-        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+        {
+            let sampled_idx = self.last_sampled_idx;
+            self.update_sampled_image(sampled_idx, &view);
+            let mut indices = [None; MAX_MIPCOUNT];
+            indices[0] = Some(sampled_idx);
+            self.sampled_indices.insert(handle, indices);
+            self.last_sampled_idx += 1;
+        }
 
-        self.sampled_images.push(image);
-        self.sampled_infos.push(Some(info));
-        self.sampled_memories.push(Some(memory));
-        self.sampled_views.push(view);
+        if info.usage.contains(vk::ImageUsageFlags::STORAGE) {
+            let storage_idx = self.last_storage_idx;
+            self.update_storage_image(storage_idx, &view);
+            let mut indices = [None; MAX_MIPCOUNT];
+            indices[0] = Some(storage_idx);
+            self.storage_indices.insert(handle, indices);
+            self.last_storage_idx += 1;
+        }
 
-        Ok(idx)
+        if let Some(factor) = screen_relation.as_f32() {
+            self.screen_sized_images.insert(handle, factor);
+        }
+
+        Ok(handle)
     }
 
-    // WARN: Update images too
+    pub fn push_external_image(
+        &mut self,
+        image: vk::Image,
+        view: vk::ImageView,
+    ) -> Result<ImageHandle> {
+        let mut views = [None; MAX_MIPCOUNT];
+        views[0] = Some(view);
+        let handle = self.images.insert(Image {
+            inner: image,
+            views,
+            info: None,
+            memory: None,
+        });
+
+        {
+            let sampled_idx = self.last_sampled_idx;
+            self.update_sampled_image(sampled_idx, &view);
+            let mut indices = [None; MAX_MIPCOUNT];
+            indices[0] = Some(sampled_idx);
+            self.sampled_indices.insert(handle, indices);
+            self.last_sampled_idx += 1;
+        }
+
+        {
+            let storage_idx = self.last_storage_idx;
+            self.update_storage_image(storage_idx, &view);
+            let mut indices = [None; MAX_MIPCOUNT];
+            indices[0] = Some(storage_idx);
+            self.storage_indices.insert(handle, indices);
+            self.last_storage_idx += 1;
+        }
+
+        Ok(handle)
+    }
+
+    pub fn update_external_image(
+        &mut self,
+        handle: ImageHandle,
+        new_image: vk::Image,
+        new_view: vk::ImageView,
+    ) {
+        let image = &mut self.images[handle];
+        image.inner = new_image;
+        image.views[0] = Some(new_view);
+
+        let sampled_idx = self.get_sampled_idx(handle, 0);
+        self.update_sampled_image(sampled_idx, &new_view);
+        let storage_idx = self.get_storage_idx(handle, 0);
+        self.update_storage_image(storage_idx, &new_view);
+    }
+
     pub fn update_sampled_image(&self, idx: u32, view: &vk::ImageView) {
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(*view)
@@ -528,89 +748,19 @@ impl TextureArena {
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.storage_set)
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(0)
+            .dst_binding(STORAGE_SET)
             .image_info(std::slice::from_ref(&image_info))
             .dst_array_element(idx);
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
-    }
-
-    pub fn update_sampled_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
-        for (i, info) in indices
-            .iter()
-            .filter_map(|&i| self.sampled_infos[i].map(|info| (i, info)))
-        {
-            let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
-            let view = self.device.create_2d_view(&image, info.format, 0)?;
-
-            self.update_sampled_image(i as u32, &view);
-
-            if let Some(old_memory) = self.sampled_memories[i].take() {
-                self.device
-                    .destroy_image(self.sampled_images[i], old_memory);
-            }
-            unsafe { self.device.destroy_image_view(self.sampled_views[i], None) };
-            self.sampled_images[i] = image;
-            self.sampled_memories[i] = Some(memory);
-            self.sampled_views[i] = view;
-        }
-
-        Ok(())
-    }
-
-    pub fn update_storage_images_by_idx(&mut self, indices: &[usize]) -> Result<()> {
-        for (i, info) in indices
-            .iter()
-            .filter_map(|&i| self.storage_infos[i].map(|info| (i, info)))
-        {
-            let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
-            let view = self.device.create_2d_view(&image, info.format, 0)?;
-
-            self.update_storage_image(i as u32, &view);
-
-            if let Some(old_memory) = self.storage_memory[i].take() {
-                self.device
-                    .destroy_image(self.storage_images[i], old_memory);
-            }
-            unsafe { self.device.destroy_image_view(self.storage_views[i], None) };
-            self.storage_images[i] = image;
-            self.storage_memory[i] = Some(memory);
-            self.storage_views[i] = view;
-        }
-
-        Ok(())
     }
 }
 
 impl Drop for TextureArena {
     fn drop(&mut self) {
         unsafe {
-            self.sampled_views
-                .iter()
-                .enumerate()
-                .filter(|(_, view)| !view.is_null())
-                .filter(|(i, _)| !self.external_sampled_img_idx.contains(&(*i as u32)))
-                .for_each(|(_, &view)| self.device.destroy_image_view(view, None));
-            self.sampled_images
-                .iter_mut()
-                .zip(self.sampled_memories.iter_mut())
-                .filter_map(|(img, mem)| mem.take().map(|mem| (img, mem)))
-                .for_each(|(image, memory)| {
-                    self.device.destroy_image(*image, memory);
-                });
-
-            self.storage_views
-                .iter()
-                .enumerate()
-                .filter(|(_, view)| !view.is_null())
-                .filter(|(i, _)| !self.external_storage_img_idx.contains(&(*i as u32)))
-                .for_each(|(_, &view)| self.device.destroy_image_view(view, None));
-            self.storage_images
-                .iter_mut()
-                .zip(self.storage_memory.iter_mut())
-                .filter_map(|(img, mem)| mem.take().map(|mem| (img, mem)))
-                .for_each(|(image, memory)| {
-                    self.device.destroy_image(*image, memory);
-                });
+            self.images
+                .values_mut()
+                .for_each(|image| image.destroy(&self.device));
 
             self.samplers
                 .iter()

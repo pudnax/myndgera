@@ -251,6 +251,17 @@ impl Swapchain {
     pub fn get_current_image_view(&self) -> &vk::ImageView {
         &self.views[self.current_image]
     }
+    pub fn get_prev_image_idx(&self) -> usize {
+        self.current_image
+            .checked_sub(1)
+            .unwrap_or(self.images.len() - 1)
+    }
+    pub fn get_prev_image(&self) -> &vk::Image {
+        &self.images[self.get_prev_image_idx()]
+    }
+    pub fn get_prev_image_view(&self) -> &vk::ImageView {
+        &self.views[self.get_prev_image_idx()]
+    }
 
     pub fn acquire_next_image(&mut self) -> VkResult<FrameGuard> {
         self.frames.retain_mut(|frame| {

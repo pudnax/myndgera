@@ -1,9 +1,5 @@
 use core::f32;
-use std::{
-    f32::consts::{PI, TAU},
-    mem,
-    sync::Arc,
-};
+use std::{f32::consts::PI, mem, sync::Arc};
 
 use anyhow::{Ok, Result};
 use ash::vk;
@@ -84,27 +80,17 @@ struct PostProcessPC {
 }
 
 struct LineRaster {
-    lights_buffer: Buffer,
     lines_buffer: Buffer,
+    lights_buffer: Buffer,
     spawn_pass: ComputeHandle,
     clear_pass: ComputeHandle,
     raster_pass: ComputeHandle,
     resolve_pass: ComputeHandle,
     postprocess_pass: RenderHandle,
-    accumulate_images: Vec<usize>,
-    hdr_target: ManagedImage,
-    hdr_target_info: vk::ImageCreateInfo<'static>,
-    hdr_target_view: vk::ImageView,
-    hdr_sampled_idx: u32,
-    hdr_storage_idx: u32,
+    accumulate_images: Vec<ImageHandle>,
+    hdr_target: ImageHandle,
     bloom: Bloom,
     device: Arc<Device>,
-}
-
-impl Drop for LineRaster {
-    fn drop(&mut self) {
-        unsafe { self.device.destroy_image_view(self.hdr_target_view, None) };
-    }
 }
 
 impl Example for LineRaster {
@@ -192,13 +178,12 @@ impl Example for LineRaster {
         )?;
 
         let mut accumulate_images = vec![];
-        let extent = vk::Extent3D {
-            width: ctx.swapchain.extent.width,
-            height: ctx.swapchain.extent.height,
-            depth: 1,
-        };
         let image_info = vk::ImageCreateInfo::default()
-            .extent(extent)
+            .extent(vk::Extent3D {
+                width: ctx.swapchain.extent.width,
+                height: ctx.swapchain.extent.height,
+                depth: 1,
+            })
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk::Format::R32_UINT)
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
@@ -206,19 +191,14 @@ impl Example for LineRaster {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        for i in 0..3 {
-            let (image, memory) = ctx
-                .device
-                .create_image(&image_info, MemoryLocation::GpuOnly)?;
-            let view = ctx.device.create_2d_view(&image, vk::Format::R32_UINT, 0)?;
-            let idx =
-                state
-                    .texture_arena
-                    .push_storage_image(image, view, Some(memory), Some(image_info));
-            accumulate_images.push(idx as usize);
-            ctx.device
-                .name_object(view, &format!("Storage img view: {i}"));
-            ctx.device.name_object(image, &format!("Storage img: {i}"));
+        for _ in 0..3 {
+            let image = state.texture_arena.push_image(
+                &ctx.queue,
+                image_info,
+                ScreenRelation::Identity,
+                &[],
+            )?;
+            accumulate_images.push(image);
         }
 
         let hdr_target_info = vk::ImageCreateInfo::default()
@@ -234,20 +214,12 @@ impl Example for LineRaster {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let hdr_target = ManagedImage::new(&ctx.device, &hdr_target_info, MemoryLocation::GpuOnly)?;
-        let hdr_target_view =
-            ctx.device
-                .create_2d_view(&hdr_target.image, hdr_target_info.format, 0)?;
-        let hdr_sampled_idx =
-            state
-                .texture_arena
-                .push_sampled_image(hdr_target.image, hdr_target_view, None, None);
-        let hdr_storage_idx =
-            state
-                .texture_arena
-                .push_storage_image(hdr_target.image, hdr_target_view, None, None);
-        ctx.device.name_object(hdr_target.image, "Hdr Target");
-        ctx.device.name_object(hdr_target_view, "Hdr Target View");
+        let hdr_target = state.texture_arena.push_image(
+            &ctx.queue,
+            hdr_target_info,
+            ScreenRelation::Identity,
+            &[],
+        )?;
 
         let bloom = Bloom::new(ctx, state)?;
 
@@ -261,10 +233,6 @@ impl Example for LineRaster {
             postprocess_pass,
             accumulate_images,
             hdr_target,
-            hdr_target_info,
-            hdr_target_view,
-            hdr_sampled_idx,
-            hdr_storage_idx,
             bloom,
             device: ctx.device.clone(),
         })
@@ -338,33 +306,6 @@ impl Example for LineRaster {
         Ok(())
     }
 
-    fn resize(&mut self, ctx: &RenderContext, state: &mut AppState) -> Result<()> {
-        let extent = ctx.swapchain.extent;
-        let texture_arena = &mut state.texture_arena;
-        for &i in &self.accumulate_images {
-            if let Some(info) = &mut texture_arena.storage_infos[i] {
-                info.extent.width = extent.width;
-                info.extent.height = extent.height;
-            }
-        }
-        texture_arena.update_storage_images_by_idx(&self.accumulate_images)?;
-
-        self.hdr_target_info.extent.width = extent.width;
-        self.hdr_target_info.extent.height = extent.height;
-        self.hdr_target =
-            ManagedImage::new(&ctx.device, &self.hdr_target_info, MemoryLocation::GpuOnly)?;
-        ctx.device.name_object(self.hdr_target.image, "Hdr Target");
-        unsafe { self.device.destroy_image_view(self.hdr_target_view, None) };
-        self.hdr_target_view =
-            ctx.device
-                .create_2d_view(&self.hdr_target.image, self.hdr_target_info.format, 0)?;
-        texture_arena.update_sampled_image(self.hdr_sampled_idx, &self.hdr_target_view);
-        texture_arena.update_storage_image(self.hdr_storage_idx, &self.hdr_target_view);
-
-        self.bloom.resize(ctx, state)?;
-        Ok(())
-    }
-
     fn render(
         &mut self,
         ctx: &RenderContext,
@@ -372,6 +313,7 @@ impl Example for LineRaster {
         frame: &mut FrameGuard,
     ) -> Result<()> {
         let idx = frame.image_idx;
+        let texture_arena = &mut state.texture_arena;
 
         let global_barrier = |src, dst| {
             unsafe {
@@ -386,9 +328,9 @@ impl Example for LineRaster {
         };
 
         let raster_push_const = RasterPC {
-            red_image: self.accumulate_images[0] as u32,
-            green_image: self.accumulate_images[1] as u32,
-            blue_image: self.accumulate_images[2] as u32,
+            red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
+            green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
+            blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
             noise_offset: rand::random::<Vec2>(),
             camera_buffer: state.camera_uniform.address,
             line_buffer: self.lines_buffer.address,
@@ -404,7 +346,7 @@ impl Example for LineRaster {
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout,
-                &[state.texture_arena.storage_set],
+                &[texture_arena.storage_set],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
             const SUBGROUP_SIZE: u32 = 16;
@@ -431,10 +373,7 @@ impl Example for LineRaster {
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout,
-                &[
-                    state.texture_arena.sampled_set,
-                    state.texture_arena.storage_set,
-                ],
+                &[texture_arena.sampled_set, texture_arena.storage_set],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
             frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 256), 1, 1);
@@ -448,7 +387,7 @@ impl Example for LineRaster {
         {
             self.device.image_transition(
                 frame.command_buffer(),
-                &self.hdr_target.image,
+                &texture_arena.get_image(self.hdr_target).inner,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::GENERAL,
             );
@@ -457,20 +396,17 @@ impl Example for LineRaster {
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[ResolvePC {
-                    target_image: self.hdr_storage_idx,
-                    red_image: self.accumulate_images[0] as u32,
-                    green_image: self.accumulate_images[1] as u32,
-                    blue_image: self.accumulate_images[2] as u32,
+                    target_image: texture_arena.get_storage_idx(self.hdr_target, 0),
+                    red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
+                    green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
+                    blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
                     camera_buffer: state.camera_uniform.address,
                 }],
             );
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout,
-                &[
-                    state.texture_arena.sampled_set,
-                    state.texture_arena.storage_set,
-                ],
+                &[texture_arena.sampled_set, texture_arena.storage_set],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
             const SUBGROUP_SIZE: u32 = 16;
@@ -492,9 +428,7 @@ impl Example for LineRaster {
             state,
             frame,
             BloomParams {
-                target_image: &self.hdr_target.image,
-                target_image_sampled: self.hdr_sampled_idx,
-                target_image_storage: self.hdr_storage_idx,
+                target_image: self.hdr_target,
                 target_current_layout: vk::ImageLayout::GENERAL,
                 strength: 4. / 16.,
                 width: 2.,
@@ -507,6 +441,7 @@ impl Example for LineRaster {
         );
 
         {
+            let texture_arena = &mut state.texture_arena;
             frame.begin_rendering(
                 ctx.swapchain.get_current_image_view(),
                 vk::AttachmentLoadOp::CLEAR,
@@ -517,9 +452,9 @@ impl Example for LineRaster {
                 pipeline.layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 &[PostProcessPC {
-                    current_image: state.texture_arena.external_sampled_img_idx[idx as usize],
-                    hdr_sampled: self.hdr_sampled_idx,
-                    hdr_storage: self.hdr_storage_idx,
+                    current_image: texture_arena.get_sampled_idx(state.swapchain_handles[idx], 0),
+                    hdr_sampled: texture_arena.get_sampled_idx(self.hdr_target, 0),
+                    hdr_storage: texture_arena.get_storage_idx(self.hdr_target, 0),
                 }],
             );
             frame.bind_descriptor_sets(

@@ -6,6 +6,7 @@
 #include "shared.glsl"
 #include <camera.glsl>
 #include <prelude.glsl>
+#include <textures.glsl>
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;

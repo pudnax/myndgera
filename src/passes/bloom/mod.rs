@@ -5,18 +5,15 @@ use std::{mem, sync::Arc};
 use anyhow::Result;
 use ash::vk;
 use glam::{uvec2, UVec2};
-use gpu_allocator::MemoryLocation;
 
 use crate::{
-    dispatch_optimal, AppState, ComputeHandle, Device, FrameGuard, ManagedImage, RenderContext,
-    COLOR_SUBRESOURCE_MASK,
+    dispatch_optimal, AppState, ComputeHandle, Device, FrameGuard, ImageHandle, RenderContext,
+    ScreenRelation, COLOR_SUBRESOURCE_MASK,
 };
 
 #[derive(Clone, Copy, Debug)]
-pub struct BloomParams<'a> {
-    pub target_image: &'a vk::Image,
-    pub target_image_sampled: u32,
-    pub target_image_storage: u32,
+pub struct BloomParams {
+    pub target_image: ImageHandle,
     pub target_current_layout: vk::ImageLayout,
     pub strength: f32,
     pub width: f32,
@@ -52,23 +49,9 @@ pub struct Bloom {
     downsample_pass: ComputeHandle,
     downsample_low_pass: ComputeHandle,
     upsample_pass: ComputeHandle,
-    texture_info: vk::ImageCreateInfo<'static>,
     miplevel_count: u32,
-    accum_texture: ManagedImage,
-    accum_views: Vec<vk::ImageView>,
-    accum_texture_sampled_idx: u32,
-    accum_texture_storage_idx: Vec<u32>,
+    accum_texture: ImageHandle,
     device: Arc<Device>,
-}
-
-impl Drop for Bloom {
-    fn drop(&mut self) {
-        unsafe {
-            self.accum_views
-                .iter()
-                .for_each(|&view| self.device.destroy_image_view(view, None))
-        };
-    }
 }
 
 impl Bloom {
@@ -101,8 +84,8 @@ impl Bloom {
         )?;
         let texture_info = vk::ImageCreateInfo::default()
             .extent(vk::Extent3D {
-                width: ctx.swapchain.extent.width / 2,
-                height: ctx.swapchain.extent.height / 2,
+                width: ctx.swapchain.extent.width,
+                height: ctx.swapchain.extent.height,
                 depth: 1,
             })
             .image_type(vk::ImageType::TYPE_2D)
@@ -113,71 +96,19 @@ impl Bloom {
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let accum_texture = ManagedImage::new(&ctx.device, &texture_info, MemoryLocation::GpuOnly)?;
-
-        let mut accum_views = vec![];
-        let mut accum_texture_storage_idx = vec![];
-        for i in 0..miplevel_count {
-            let view = ctx
-                .device
-                .create_2d_view(&accum_texture.image, texture_info.format, i)?;
-            ctx.device.name_object(view, &format!("Bloom View {i}"));
-
-            accum_texture_storage_idx.push(state.texture_arena.push_storage_image(
-                accum_texture.image,
-                view,
-                None,
-                None,
-            ));
-            accum_views.push(view);
-        }
-        let accum_texture_sampled_idx =
+        let accum_texture =
             state
                 .texture_arena
-                .push_sampled_image(accum_texture.image, accum_views[0], None, None);
-        ctx.device.name_object(accum_texture.image, "Bloom Texture");
+                .push_image(&ctx.queue, texture_info, ScreenRelation::Half, &[])?;
 
         Ok(Self {
             downsample_pass,
             downsample_low_pass,
             upsample_pass,
             miplevel_count,
-            texture_info,
             accum_texture,
-            accum_views,
-            accum_texture_sampled_idx,
-            accum_texture_storage_idx,
             device: ctx.device.clone(),
         })
-    }
-
-    pub fn resize(&mut self, ctx: &RenderContext, state: &mut AppState) -> Result<()> {
-        self.texture_info.extent.width = ctx.swapchain.extent.width / 2;
-        self.texture_info.extent.height = ctx.swapchain.extent.height / 2;
-        self.accum_texture =
-            ManagedImage::new(&ctx.device, &self.texture_info, MemoryLocation::GpuOnly)?;
-        ctx.device
-            .name_object(self.accum_texture.image, "Bloom Texture");
-        unsafe {
-            self.accum_views
-                .iter()
-                .for_each(|&view| self.device.destroy_image_view(view, None))
-        };
-        for (i, view) in self.accum_views.iter_mut().enumerate() {
-            let new_view = self.device.create_2d_view(
-                &self.accum_texture.image,
-                self.texture_info.format,
-                i as u32,
-            )?;
-            state
-                .texture_arena
-                .update_storage_image(self.accum_texture_storage_idx[i], &new_view);
-            *view = new_view;
-        }
-        state
-            .texture_arena
-            .update_sampled_image(self.accum_texture_sampled_idx, &self.accum_views[0]);
-        Ok(())
     }
 
     pub fn apply(
@@ -192,16 +123,17 @@ impl Bloom {
             .create_scoped_marker(frame.command_buffer(), "Bloom Pass");
         let screen_extent = ctx.swapchain.extent;
         let source_image = params.target_image;
+        let texture_arena = &mut state.texture_arena;
 
         ctx.device.image_transition(
             frame.command_buffer(),
-            source_image,
+            &texture_arena.get_image(source_image).inner,
             params.target_current_layout,
             vk::ImageLayout::GENERAL,
         );
         ctx.device.image_transition(
             frame.command_buffer(),
-            &self.accum_texture.image,
+            &texture_arena.get_image(self.accum_texture).inner,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
         );
@@ -214,8 +146,8 @@ impl Bloom {
                 .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
             [
-                image_barrier.image(*source_image),
-                image_barrier.image(self.accum_texture.image),
+                image_barrier.image(texture_arena.get_image(params.target_image).inner),
+                image_barrier.image(texture_arena.get_image(self.accum_texture).inner),
             ]
         };
 
@@ -233,13 +165,13 @@ impl Bloom {
             if i == 0 {
                 pipeline = self.downsample_low_pass;
                 source_lod = 0;
-                source_texture = params.target_image_sampled;
+                source_texture = params.target_image;
                 source_dims = uvec2(screen_extent.width, screen_extent.height);
                 workgroup_size = 16;
             } else {
                 pipeline = self.downsample_pass;
                 source_lod = i - 1;
-                source_texture = self.accum_texture_sampled_idx;
+                source_texture = self.accum_texture;
                 source_dims = uvec2(screen_extent.width, screen_extent.height) >> i;
                 workgroup_size = 8;
             }
@@ -250,8 +182,8 @@ impl Bloom {
                 downsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[DownsamplePC {
-                    source_sampled_img_idx: source_texture,
-                    target_storage_img_idx: self.accum_texture_storage_idx[i as usize],
+                    source_sampled_img_idx: texture_arena.get_sampled_idx(source_texture, 0),
+                    target_storage_img_idx: texture_arena.get_storage_idx(self.accum_texture, i),
                     source_dims,
                     target_dims,
                     source_lod,
@@ -260,10 +192,7 @@ impl Bloom {
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
                 downsample_pipeline.layout,
-                &[
-                    state.texture_arena.sampled_set,
-                    state.texture_arena.storage_set,
-                ],
+                &[texture_arena.sampled_set, texture_arena.storage_set],
             );
 
             frame.dispatch(
@@ -278,10 +207,7 @@ impl Bloom {
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             upsample_pipeline.layout,
-            &[
-                state.texture_arena.sampled_set,
-                state.texture_arena.storage_set,
-            ],
+            &[texture_arena.sampled_set, texture_arena.storage_set],
         );
 
         for i in (0..self.miplevel_count).rev() {
@@ -293,16 +219,14 @@ impl Bloom {
             };
 
             let source_dims = uvec2(screen_extent.width, screen_extent.height) >> (i + 1);
-            let (target_lod, target_texture_sampled, target_texture_storage, target_dims);
+            let (target_lod, target_texture, target_dims);
             if i == 0 {
                 target_lod = 0;
-                target_texture_sampled = params.target_image_sampled;
-                target_texture_storage = params.target_image_storage;
+                target_texture = params.target_image;
                 target_dims = uvec2(screen_extent.width, screen_extent.height);
             } else {
                 target_lod = i - 1;
-                target_texture_sampled = self.accum_texture_sampled_idx;
-                target_texture_storage = self.accum_texture_storage_idx[target_lod as usize];
+                target_texture = self.accum_texture;
                 target_dims = uvec2(screen_extent.width, screen_extent.height) >> i;
             }
 
@@ -310,9 +234,10 @@ impl Bloom {
                 upsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[UpsamplePC {
-                    source_sampled_img_idx: self.accum_texture_sampled_idx,
-                    target_sampled_img_idx: target_texture_sampled,
-                    target_storage_img_idx: target_texture_storage,
+                    source_sampled_img_idx: texture_arena.get_sampled_idx(self.accum_texture, 0),
+                    target_sampled_img_idx: texture_arena.get_sampled_idx(target_texture, 0),
+                    target_storage_img_idx: texture_arena
+                        .get_storage_idx(target_texture, target_lod),
                     source_dims,
                     target_dims,
                     width: params.width,
@@ -331,7 +256,7 @@ impl Bloom {
         }
         ctx.device.image_transition(
             frame.command_buffer(),
-            source_image,
+            &texture_arena.get_image(source_image).inner,
             vk::ImageLayout::GENERAL,
             params.target_current_layout,
         );

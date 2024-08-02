@@ -1,15 +1,6 @@
 const float PI = acos(-1.);
 const float TAU = 2. * PI;
 
-const uint GENERIC_TEX1 = 0;
-const uint GENERIC_TEX2 = 1;
-const uint DITHER_TEX = 2;
-const uint NOISE_TEX = 3;
-const uint BLUE_TEX = 4;
-
-const uint LINEAR_SAMPL = 0;
-const uint NEAREST_SAMPL = 1;
-
 vec4 ASSERT_COL = vec4(0.);
 void assert(bool cond, int v) {
     if (!(cond)) {
@@ -25,14 +16,10 @@ void assert(bool cond, int v) {
 }
 void assert(bool cond) { assert(cond, 0); }
 #define catch_assert(out)                                                      \
-    if (ASSERT_COL.x < 0.0)                                                    \
-        out = vec4(1.0, 0.0, 0.0, 1.0);                                        \
-    if (ASSERT_COL.y < 0.0)                                                    \
-        out = vec4(0.0, 1.0, 0.0, 1.0);                                        \
-    if (ASSERT_COL.z < 0.0)                                                    \
-        out = vec4(0.0, 0.0, 1.0, 1.0);                                        \
-    if (ASSERT_COL.w < 0.0)                                                    \
-        out = vec4(1.0, 1.0, 0.0, 1.0);
+    if (ASSERT_COL.x < 0.0) out = vec4(1.0, 0.0, 0.0, 1.0);                    \
+    if (ASSERT_COL.y < 0.0) out = vec4(0.0, 1.0, 0.0, 1.0);                    \
+    if (ASSERT_COL.z < 0.0) out = vec4(0.0, 0.0, 1.0, 1.0);                    \
+    if (ASSERT_COL.w < 0.0) out = vec4(1.0, 1.0, 0.0, 1.0);
 
 float AAstep(float threshold, float val) {
     return smoothstep(-.5, .5,
@@ -53,10 +40,8 @@ vec2 ray_march(vec3 rayPos, vec3 rayDir) {
         vec3 pos = rayPos + (dist * rayDir);
         float posToScene = worldsdf(pos);
         dist += posToScene;
-        if (abs(posToScene) < HIT_DIST)
-            return vec2(dist, i);
-        if (posToScene > MISS_DIST)
-            break;
+        if (abs(posToScene) < HIT_DIST) return vec2(dist, i);
+        if (posToScene > MISS_DIST) break;
     }
 
     return vec2(-dist, MAX_STEPS);

@@ -78,15 +78,13 @@ impl Example for Toy {
         );
 
         unsafe {
-            let image_barrier = vk::ImageMemoryBarrier2::default()
-                .subresource_range(COLOR_SUBRESOURCE_MASK)
+            let memory_barrier = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
-                .image(state.texture_arena.sampled_images[PREV_FRAME_IDX]);
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS);
             ctx.device.cmd_pipeline_barrier2(
                 *frame.command_buffer(),
                 &vk::DependencyInfo::default()
-                    .image_memory_barriers(std::slice::from_ref(&image_barrier)),
+                    .memory_barriers(std::slice::from_ref(&memory_barrier)),
             )
         };
 

@@ -111,6 +111,7 @@ pub struct AppState {
     frame_accumulated_time: f64,
 
     pub texture_arena: TextureArena,
+    pub swapchain_handles: Vec<ImageHandle>,
     pub staging_write: StagingWrite,
 
     recorder: Recorder,
@@ -142,7 +143,11 @@ impl AppState {
             ..Default::default()
         };
 
-        let texture_arena = TextureArena::new(&ctx.device, &ctx.swapchain, &ctx.queue)?;
+        let mut texture_arena = TextureArena::new(&ctx.device, &ctx.queue)?;
+        let mut swapchain_handles = vec![];
+        for (&image, &view) in ctx.swapchain.images.iter().zip(&ctx.swapchain.views) {
+            swapchain_handles.push(texture_arena.push_external_image(image, view)?);
+        }
         let mut camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
         camera.aspect = ctx.swapchain.extent.width as f32 / ctx.swapchain.extent.height as f32;
         let camera_uniform = ctx.device.create_buffer_typed(
@@ -163,6 +168,7 @@ impl AppState {
             frame_accumulated_time: 0.,
 
             texture_arena,
+            swapchain_handles,
             staging_write,
 
             recorder,
@@ -383,24 +389,21 @@ impl<E: Example> AppInit<E> {
         self.state.stats.wh = [extent.width as f32, extent.height as f32];
         self.state.camera.aspect = extent.width as f32 / extent.height as f32;
 
-        for (idx, view) in self.render.swapchain.views.iter().enumerate() {
-            self.state
-                .texture_arena
-                .update_storage_image(self.state.texture_arena.external_storage_img_idx[idx], view);
-            self.state
-                .texture_arena
-                .update_sampled_image(self.state.texture_arena.external_sampled_img_idx[idx], view)
-        }
-
-        for i in SCREENSIZED_IMAGE_INDICES {
-            if let Some(info) = &mut self.state.texture_arena.sampled_infos[i] {
-                info.extent.width = extent.width;
-                info.extent.height = extent.height;
-            }
-        }
         self.state
             .texture_arena
-            .update_sampled_images_by_idx(&SCREENSIZED_IMAGE_INDICES)?;
+            .resize(extent.width, extent.height)?;
+
+        for ((&handle, &image), &view) in self
+            .state
+            .swapchain_handles
+            .iter()
+            .zip(&self.render.swapchain.images)
+            .zip(&self.render.swapchain.views)
+        {
+            self.state
+                .texture_arena
+                .update_external_image(handle, image, view);
+        }
 
         self.example.resize(&self.render, &mut self.state)?;
 
@@ -567,16 +570,6 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                         .render(&self.render, &mut self.state, &mut frame)
                         .map_err(|err| log::error!("{err}"));
                 }
-
-                self.device.blit_image(
-                    frame.command_buffer(),
-                    self.render.swapchain.get_current_image(),
-                    self.render.swapchain.extent(),
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    &self.state.texture_arena.sampled_images[PREV_FRAME_IDX],
-                    self.render.swapchain.extent(),
-                    vk::ImageLayout::UNDEFINED,
-                );
 
                 self.device.end_debug_marker(frame.command_buffer());
 
