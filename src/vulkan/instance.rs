@@ -96,10 +96,7 @@ impl Instance {
         })
     }
 
-    pub fn create_device_and_queues(
-        &self,
-        surface: &Surface,
-    ) -> Result<(Device, vk::Queue, vk::Queue)> {
+    pub fn create_device_and_queues(&self, surface: &Surface) -> Result<(Device, vk::Queue)> {
         let required_device_extensions = [
             khr::swapchain::NAME,
             ext::graphics_pipeline_library::NAME,
@@ -112,6 +109,8 @@ impl Instance {
             khr::create_renderpass2::NAME,
             ext::descriptor_indexing::NAME,
             khr::format_feature_flags2::NAME,
+            ext::shader_atomic_float::NAME,
+            ext::scalar_block_layout::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -173,6 +172,10 @@ impl Instance {
 
         let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
 
+        let mut feature_scalar_layout =
+            vk::PhysicalDeviceScalarBlockLayoutFeatures::default().scalar_block_layout(true);
+        let mut feature_atomic_float = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+            .shader_image_float32_atomics(true);
         let mut feature_dynamic_state =
             vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT::default();
         let mut feature_descriptor_indexing =
@@ -210,8 +213,10 @@ impl Instance {
             .push_next(&mut feature_descriptor_indexing)
             .push_next(&mut feature_buffer_device_address)
             .push_next(&mut feature_synchronization2)
+            .push_next(&mut feature_scalar_layout)
             .push_next(&mut feature_dynamic_state)
             .push_next(&mut feature_pipeline_library)
+            .push_next(&mut feature_atomic_float)
             .push_next(&mut feature_dynamic_rendering);
 
         let device_info = vk::DeviceCreateInfo::default()
@@ -255,6 +260,7 @@ impl Instance {
             physical_device: pdevice,
             device_properties: device_properties.properties,
             descriptor_indexing_props,
+            queue: unsafe { device.get_device_queue(main_queue_family_idx, 0) },
             main_queue_family_idx,
             transfer_queue_family_idx,
             command_pool,
@@ -264,10 +270,9 @@ impl Instance {
             dynamic_rendering,
             dbg_utils,
         };
-        let main_queue = unsafe { device.get_device_queue(main_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(transfer_queue_family_idx, 0) };
 
-        Ok((device, main_queue, transfer_queue))
+        Ok((device, transfer_queue))
     }
 
     pub fn create_surface(

@@ -151,6 +151,7 @@ pub struct FragmentShaderDesc {
 
 pub struct FragmentOutputDesc {
     pub surface_format: vk::Format,
+    pub color_write_mask: vk::ColorComponentFlags,
     pub multisample_state: vk::SampleCountFlags,
 }
 
@@ -158,6 +159,7 @@ impl Default for FragmentOutputDesc {
     fn default() -> Self {
         Self {
             surface_format: vk::Format::B8G8R8A8_SRGB,
+            color_write_mask: vk::ColorComponentFlags::RGBA,
             multisample_state: vk::SampleCountFlags::TYPE_1,
         }
     }
@@ -272,8 +274,14 @@ impl RenderPipeline {
             let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
                 .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
+            let blending_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(fragment_output_desc.color_write_mask);
+            let blending_state = vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(std::slice::from_ref(&blending_attachment));
+
             create_library(device, GPF::FRAGMENT_OUTPUT_INTERFACE, |desc| {
-                desc.multisample_state(&multisample_state)
+                desc.color_blend_state(&blending_state)
+                    .multisample_state(&multisample_state)
                     .push_next(&mut dyn_render)
             })?
         };

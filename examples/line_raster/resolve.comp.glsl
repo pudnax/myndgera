@@ -10,8 +10,7 @@
 
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
-layout(set = 1, binding = 0, r32ui) coherent
-    restrict uniform uimage2D gstorage_read[];
+layout(set = 1, binding = 0) coherent restrict uniform uimage2D gstorage_read[];
 layout(set = 1, binding = 0) writeonly coherent
     restrict uniform image2D gstorage_write[];
 
@@ -20,6 +19,7 @@ layout(scalar, push_constant) uniform PushConstant {
     uint red_img;
     uint green_img;
     uint blue_img;
+    uint depth_img;
     CameraBuf camera;
 }
 pc;
@@ -88,6 +88,10 @@ void main() {
     float green = imageLoad(gstorage_read[pc.green_img], ipix).x;
     float blue = imageLoad(gstorage_read[pc.blue_img], ipix).x;
     col += vec3(red, green, blue) / RAY_COLOR_RANGE;
+
+    // float d = imageLoad(gstorage_read[pc.depth_img], ipix).x;
+    // d = smoothstep(d, 0., 1.);
+    // col = vec3(d);
 
     imageStore(gstorage_write[pc.target_img], ipix, vec4(col, 1.));
 }

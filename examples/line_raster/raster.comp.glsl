@@ -1,4 +1,5 @@
 #version 460
+#extension GL_EXT_shader_atomic_float : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
@@ -12,11 +13,14 @@ layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
 layout(set = 1, binding = 0, r32ui) uniform coherent
     restrict uimage2D gstorage[];
+layout(set = 1, binding = 0, r16f) uniform coherent
+    restrict image2D gstoragef[];
 
 layout(scalar, push_constant) uniform PushConstant {
     uint red_img;
     uint green_img;
     uint blue_img;
+    uint depth_img;
     vec2 noise_offset;
     CameraBuf camera;
     Rays rays_ptr;
@@ -59,7 +63,8 @@ void draw_point(ivec2 pix, vec3 col) {
     imageAtomicAdd(gstorage[pc.blue_img], pix, ucol.b);
 }
 
-void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
+void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims, float start_depth,
+           float end_depth) {
     vec2 ray_dir = ray_end - ray_start;
     float ray_len = length(ray_dir);
     ray_dir /= ray_len;
@@ -73,8 +78,14 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
     for (float s = 0; s < ray_len; s += step) {
         vec2 p = ray_start + ray_dir * s;
         ivec2 pix = ivec2(p);
+        float curr_depth = mix(start_depth, end_depth, s / ray_len);
+        float depth = imageLoad(gstoragef[pc.depth_img], pix).x;
+        if (curr_depth > depth) {
+            imageStore(gstoragef[pc.depth_img], pix,
+                       vec4(curr_depth, 0., 0., 0.));
+        }
         vec3 col = ray.color.rgb * ray.color.w;
-        // if (!in_bounds(pix, dims)) { continue; }
+        if (!in_bounds(pix, dims)) { continue; }
         draw_point(pix, col);
     }
 }
@@ -127,6 +138,6 @@ void main() {
     vec2 ray_start = ndc_to_raster(cray_start, dims);
     vec2 ray_end = ndc_to_raster(cray_end, dims);
 
-    naive(ray_start, ray_end, ray, vec2(dims));
+    naive(ray_start, ray_end, ray, vec2(dims), cray_start.z, cray_end.z);
     // dda(ray_start, ray_end, ray, vec2(dims));
 }

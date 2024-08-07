@@ -8,11 +8,11 @@
 #include <textures.glsl>
 
 layout(scalar, push_constant) uniform PushConstant {
+    uvec2 source_dim;
+    uvec2 target_dim;
     uint source_img;
     uint target_img_sampled;
     uint target_img_storage;
-    uvec2 source_dim;
-    uvec2 target_dim;
     float width;
     float strength;
     uint source_lod;

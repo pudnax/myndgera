@@ -56,6 +56,7 @@ struct RasterPC {
     red_image: u32,
     green_image: u32,
     blue_image: u32,
+    depth_image: u32,
     noise_offset: Vec2,
     camera_buffer: u64,
     line_buffer: u64,
@@ -68,6 +69,7 @@ struct ResolvePC {
     red_image: u32,
     green_image: u32,
     blue_image: u32,
+    depth_image: u32,
     camera_buffer: u64,
 }
 
@@ -89,6 +91,7 @@ struct LineRaster {
     postprocess_pass: RenderHandle,
     accumulate_images: Vec<ImageHandle>,
     hdr_target: ImageHandle,
+    depth_image: ImageHandle,
     bloom: Bloom,
     device: Arc<Device>,
 }
@@ -192,16 +195,14 @@ impl Example for LineRaster {
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
         for _ in 0..3 {
-            let image = state.texture_arena.push_image(
-                &ctx.queue,
-                image_info,
-                ScreenRelation::Identity,
-                &[],
-            )?;
+            let image =
+                state
+                    .texture_arena
+                    .push_image(image_info, ScreenRelation::Identity, &[])?;
             accumulate_images.push(image);
         }
 
-        let hdr_target_info = vk::ImageCreateInfo::default()
+        let image_info = vk::ImageCreateInfo::default()
             .extent(vk::Extent3D {
                 width: ctx.swapchain.extent.width,
                 height: ctx.swapchain.extent.height,
@@ -214,9 +215,13 @@ impl Example for LineRaster {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let hdr_target = state.texture_arena.push_image(
-            &ctx.queue,
-            hdr_target_info,
+        let hdr_target =
+            state
+                .texture_arena
+                .push_image(image_info, ScreenRelation::Identity, &[])?;
+
+        let depth_image = state.texture_arena.push_image(
+            image_info.format(vk::Format::R16_SFLOAT),
             ScreenRelation::Identity,
             &[],
         )?;
@@ -233,6 +238,7 @@ impl Example for LineRaster {
             postprocess_pass,
             accumulate_images,
             hdr_target,
+            depth_image,
             bloom,
             device: ctx.device.clone(),
         })
@@ -331,6 +337,7 @@ impl Example for LineRaster {
             red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
             green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
             blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
+            depth_image: texture_arena.get_storage_idx(self.depth_image, 0),
             noise_offset: rand::random::<Vec2>(),
             camera_buffer: state.camera_uniform.address,
             line_buffer: self.lines_buffer.address,
@@ -400,6 +407,7 @@ impl Example for LineRaster {
                     red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
                     green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
                     blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
+                    depth_image: texture_arena.get_storage_idx(self.depth_image, 0),
                     camera_buffer: state.camera_uniform.address,
                 }],
             );
@@ -444,7 +452,7 @@ impl Example for LineRaster {
             let texture_arena = &mut state.texture_arena;
             frame.begin_rendering(
                 ctx.swapchain.get_current_image_view(),
-                vk::AttachmentLoadOp::CLEAR,
+                vk::AttachmentLoadOp::DONT_CARE,
                 [0., 0.025, 0.025, 1.0],
             );
             let pipeline = state.pipeline_arena.get_pipeline(self.postprocess_pass);

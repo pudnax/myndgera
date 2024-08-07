@@ -83,13 +83,15 @@ void main() {
     }
 
     uint light_idx = uint(floor(hash11(int(idx)) * pc.lights_ptr.len));
+    vec4 blue_noise = read_blue_noise(ivec2(idx, pc.time));
 
     Light light = pc.lights_ptr.lights[light_idx];
 
     vec3 col = light.color.rgb;
     vec3 origin = (light.transform * vec4(vec3(0., 0., 0.), 1.)).xyz;
-    vec3 dir = rand_cone_direction(float(idx) / float(pc.num_rays), 10.,
-                                   int(pc.num_rays));
+    vec3 dir =
+        rand_cone_direction((float(idx) + blue_noise.x) / float(pc.num_rays),
+                            10., int(pc.num_rays));
     dir = (light.transform * vec4(dir, 0.)).xyz;
 
     float throughput = 1.;

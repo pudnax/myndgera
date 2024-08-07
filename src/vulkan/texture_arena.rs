@@ -164,7 +164,7 @@ pub struct TextureArena {
 }
 
 impl TextureArena {
-    pub fn new(device: &Arc<Device>, queue: &vk::Queue) -> Result<Self> {
+    pub fn new(device: &Arc<Device>) -> Result<Self> {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
@@ -335,12 +335,8 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let handle = texture_arena.push_image(
-            queue,
-            image_info,
-            ScreenRelation::None,
-            &[255, 255, 0, 255],
-        )?;
+        let handle =
+            texture_arena.push_image(image_info, ScreenRelation::None, &[255, 255, 0, 255])?;
         texture_arena.default_images.push(handle);
         assert_eq!(
             DUMMY_IMAGE_IDX as u32,
@@ -363,8 +359,7 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let handle =
-            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        let handle = texture_arena.push_image(info, ScreenRelation::None, dds.get_data(0)?)?;
         texture_arena.default_images.push(handle);
         texture_arena
             .device
@@ -379,8 +374,7 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        let handle =
-            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        let handle = texture_arena.push_image(info, ScreenRelation::None, dds.get_data(0)?)?;
         texture_arena.default_images.push(handle);
         texture_arena
             .device
@@ -395,8 +389,7 @@ impl TextureArena {
         extent.width = dds.get_width();
         extent.height = dds.get_height();
         info.extent = extent;
-        let handle =
-            texture_arena.push_image(queue, info, ScreenRelation::None, dds.get_data(0)?)?;
+        let handle = texture_arena.push_image(info, ScreenRelation::None, dds.get_data(0)?)?;
         texture_arena.default_images.push(handle);
         texture_arena
             .device
@@ -521,7 +514,7 @@ impl TextureArena {
             info.extent.height = (factor * height as f32) as u32;
 
             let (new_image, new_memory) =
-                self.device.create_image(&info, MemoryLocation::GpuOnly)?;
+                self.device.create_image(info, MemoryLocation::GpuOnly)?;
             image.destroy(&self.device);
             image.inner = new_image;
             image.memory = Some(new_memory);
@@ -587,7 +580,6 @@ impl TextureArena {
 
     pub fn push_image(
         &mut self,
-        queue: &vk::Queue,
         mut info: vk::ImageCreateInfo<'static>,
         screen_relation: ScreenRelation,
         data: &[u8],
@@ -610,7 +602,7 @@ impl TextureArena {
             let mapped = staging.map_memory().context("Failed to map memory")?;
             mapped[..data.len()].copy_from_slice(data);
 
-            self.device.one_time_submit(queue, |device, cbuff| unsafe {
+            self.device.one_time_submit(|device, cbuff| unsafe {
                 device.image_transition(
                     &cbuff,
                     &image,

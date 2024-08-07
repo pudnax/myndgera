@@ -1,14 +1,17 @@
 #version 460
+#extension GL_EXT_shader_atomic_float : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 
 layout(set = 0, binding = 0, r32ui) writeonly uniform uimage2D gtextures[];
+layout(set = 0, binding = 0, r16f) writeonly uniform image2D gtexturesf[];
 
 layout(scalar, push_constant) uniform PushConstant {
     uint red_img;
     uint green_img;
     uint blue_img;
+    uint depth_img;
 }
 pc;
 
@@ -22,4 +25,5 @@ void main() {
     imageStore(gtextures[pc.red_img], ivec2(pix), uvec4(0));
     imageStore(gtextures[pc.green_img], ivec2(pix), uvec4(0));
     imageStore(gtextures[pc.blue_img], ivec2(pix), uvec4(0));
+    imageStore(gtexturesf[pc.depth_img], ivec2(pix), uvec4(0));
 }

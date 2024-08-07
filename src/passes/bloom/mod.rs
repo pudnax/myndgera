@@ -32,11 +32,11 @@ struct DownsamplePC {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct UpsamplePC {
+    source_dims: UVec2,
+    target_dims: UVec2,
     source_sampled_img_idx: u32,
     target_sampled_img_idx: u32,
     target_storage_img_idx: u32,
-    source_dims: UVec2,
-    target_dims: UVec2,
     width: f32,
     strength: f32,
     source_lod: u32,
@@ -99,7 +99,7 @@ impl Bloom {
         let accum_texture =
             state
                 .texture_arena
-                .push_image(&ctx.queue, texture_info, ScreenRelation::Half, &[])?;
+                .push_image(texture_info, ScreenRelation::Half, &[])?;
 
         Ok(Self {
             downsample_pass,

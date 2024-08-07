@@ -26,6 +26,7 @@ pub struct Device {
     pub descriptor_indexing_props: vk::PhysicalDeviceDescriptorIndexingProperties<'static>,
     pub command_pool: vk::CommandPool,
     pub main_queue_family_idx: u32,
+    pub queue: vk::Queue,
     pub transfer_queue_family_idx: u32,
     pub allocator: Mutex<Allocator>,
     pub device: ash::Device,
@@ -193,7 +194,6 @@ impl Device {
 
     pub fn one_time_submit(
         self: &Arc<Self>,
-        queue: &vk::Queue,
         callbk: impl FnOnce(&Arc<Self>, vk::CommandBuffer) -> anyhow::Result<()>,
     ) -> Result<()> {
         let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
@@ -220,7 +220,7 @@ impl Device {
             let submit_info =
                 vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
 
-            self.queue_submit(*queue, &[submit_info], fence)?;
+            self.queue_submit(self.queue, &[submit_info], fence)?;
             self.wait_for_fences(&[fence], true, u64::MAX)?;
 
             self.destroy_fence(fence, None);
@@ -335,7 +335,6 @@ impl Device {
 
     pub fn capture_image_data(
         self: &Arc<Self>,
-        queue: &vk::Queue,
         src_image: &vk::Image,
         extent: vk::Extent2D,
         callback: impl FnOnce(ManagedImage),
@@ -358,7 +357,7 @@ impl Device {
             MemoryLocation::GpuToCpu,
         )?;
 
-        self.one_time_submit(queue, |device, command_buffer| {
+        self.one_time_submit(|device, command_buffer| {
             device.blit_image(
                 &command_buffer,
                 src_image,

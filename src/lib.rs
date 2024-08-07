@@ -143,7 +143,7 @@ impl AppState {
             ..Default::default()
         };
 
-        let mut texture_arena = TextureArena::new(&ctx.device, &ctx.queue)?;
+        let mut texture_arena = TextureArena::new(&ctx.device)?;
         let mut swapchain_handles = vec![];
         for (&image, &view) in ctx.swapchain.images.iter().zip(&ctx.swapchain.views) {
             swapchain_handles.push(texture_arena.push_external_image(image, view)?);
@@ -262,11 +262,9 @@ impl AppState {
     }
 }
 
-#[allow(dead_code)]
 pub struct RenderContext {
     pub window: Window,
 
-    pub queue: vk::Queue,
     pub transfer_queue: vk::Queue,
 
     pub swapchain: Swapchain,
@@ -284,7 +282,7 @@ impl RenderContext {
 
         let instance = Instance::new(Some(&window))?;
         let surface = instance.create_surface(&window)?;
-        let (device, queue, transfer_queue) = instance.create_device_and_queues(&surface)?;
+        let (device, transfer_queue) = instance.create_device_and_queues(&surface)?;
         let device = Arc::new(device);
 
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
@@ -292,7 +290,6 @@ impl RenderContext {
 
         Ok(Self {
             window,
-            queue,
             transfer_queue,
             swapchain,
             surface,
@@ -305,15 +302,8 @@ impl RenderContext {
 struct AppInit<E> {
     example: E,
     state: AppState,
-    update_fence: vk::Fence,
     device: Arc<Device>,
     render: RenderContext,
-}
-
-impl<E> Drop for AppInit<E> {
-    fn drop(&mut self) {
-        unsafe { self.device.destroy_fence(self.update_fence, None) };
-    }
 }
 
 impl<E: Example> AppInit<E> {
@@ -329,14 +319,7 @@ impl<E: Example> AppInit<E> {
         let example = E::init(&render, &mut state)?;
         render.window.set_title(E::name());
 
-        let update_fence = unsafe {
-            render
-                .device
-                .create_fence(&vk::FenceCreateInfo::default(), None)?
-        };
-
         Ok(Self {
-            update_fence,
             device: render.device.clone(),
             render,
             state,
@@ -356,17 +339,16 @@ impl<E: Example> AppInit<E> {
 
         state.frame_accumulated_time += frame_time;
         while state.frame_accumulated_time >= FIXED_TIME_STEP {
-            self.device
-                .one_time_submit(&self.render.queue, |device, cbuff| {
-                    let _marker = device.create_scoped_marker(&cbuff, "State Update");
+            self.device.one_time_submit(|device, cbuff| {
+                let _marker = device.create_scoped_marker(&cbuff, "State Update");
 
-                    state.update(&self.render, &cbuff)?;
-                    self.example.update(&self.render, state, &cbuff)?;
+                state.update(&self.render, &cbuff)?;
+                self.example.update(&self.render, state, &cbuff)?;
 
-                    state.staging_write.consume_pending_writes(&cbuff)?;
+                state.staging_write.consume_pending_writes(&cbuff)?;
 
-                    Ok(())
-                })?;
+                Ok(())
+            })?;
 
             state.input.mouse_state.refresh();
 
@@ -505,7 +487,6 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                         let _ = self
                             .device
                             .capture_image_data(
-                                &self.render.queue,
                                 self.render.swapchain.get_current_image(),
                                 self.render.swapchain.extent(),
                                 |tex| state.recorder.screenshot(tex),
@@ -573,11 +554,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
 
                 self.device.end_debug_marker(frame.command_buffer());
 
-                match self
-                    .render
-                    .swapchain
-                    .submit_image(&self.render.queue, frame)
-                {
+                match self.render.swapchain.submit_image(frame) {
                     Ok(_) => {}
                     Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                         let _ = self.recreate_swapchain().map_err(|err| log::warn!("{err}"));
@@ -589,7 +566,6 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
 
                 if self.state.video_recording && self.state.recorder.ffmpeg_installed() {
                     let res = self.device.capture_image_data(
-                        &self.render.queue,
                         self.render.swapchain.get_current_image(),
                         self.render.swapchain.extent(),
                         |tex| self.state.recorder.record(tex),

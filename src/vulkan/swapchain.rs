@@ -325,7 +325,7 @@ impl Swapchain {
         })
     }
 
-    pub fn submit_image(&mut self, queue: &vk::Queue, frame_guard: FrameGuard) -> VkResult<()> {
+    pub fn submit_image(&mut self, frame_guard: FrameGuard) -> VkResult<()> {
         let frame = frame_guard.frame;
 
         let image_barrier = vk::ImageMemoryBarrier2::default()
@@ -355,7 +355,7 @@ impl Swapchain {
             .signal_semaphores(&signal_semaphores);
         unsafe {
             self.device
-                .queue_submit(*queue, &[submit_info], frame.present_finished)?
+                .queue_submit(self.device.queue, &[submit_info], frame.present_finished)?
         };
 
         self.frames.push_back(frame);
@@ -365,7 +365,7 @@ impl Swapchain {
             .wait_semaphores(&signal_semaphores)
             .swapchains(slice::from_ref(&self.inner))
             .image_indices(&image_indices);
-        match unsafe { self.loader.queue_present(*queue, &present_info) } {
+        match unsafe { self.loader.queue_present(self.device.queue, &present_info) } {
             Ok(false) => Ok(()),
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 VkResult::Err(vk::Result::ERROR_OUT_OF_DATE_KHR)
