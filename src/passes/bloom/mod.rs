@@ -65,12 +65,12 @@ impl Bloom {
             state.texture_arena.storage_set_layout,
         ];
         let downsample_pass = state.pipeline_arena.create_compute_pipeline(
-            "src/passes/bloom/bloom_downsample.comp",
+            "src/passes/bloom/bloom_downsample.comp.glsl",
             &[push_constant_range],
             &desc_layouts,
         )?;
         let downsample_low_pass = state.pipeline_arena.create_compute_pipeline(
-            "src/passes/bloom/bloom_downsample_low.comp",
+            "src/passes/bloom/bloom_downsample_low.comp.glsl",
             &[push_constant_range],
             &desc_layouts,
         )?;
@@ -78,7 +78,7 @@ impl Bloom {
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .size(mem::size_of::<UpsamplePC>() as u32);
         let upsample_pass = state.pipeline_arena.create_compute_pipeline(
-            "src/passes/bloom/bloom_upsample.comp",
+            "src/passes/bloom/bloom_upsample.comp.glsl",
             &[push_constant_range],
             &desc_layouts,
         )?;

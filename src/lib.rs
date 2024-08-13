@@ -9,6 +9,7 @@ mod passes;
 mod recorder;
 mod shader_compiler;
 mod utils;
+mod view_target;
 mod vulkan;
 mod watcher;
 
@@ -38,6 +39,7 @@ pub use self::{
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
     utils::*,
+    view_target::ViewTarget,
     vulkan::*,
     watcher::Watcher,
 };
@@ -102,7 +104,8 @@ pub trait Example: 'static + Sized {
 pub struct AppState {
     pub input: Input,
     pub camera: Camera,
-    pub camera_uniform: BufferTyped<CameraUniform>,
+    pub camera_uniform: CameraUniform,
+    pub camera_uniform_gpu: BufferTyped<CameraUniform>,
 
     pub pause: bool,
     pub timeline: Instant,
@@ -150,7 +153,8 @@ impl AppState {
         }
         let mut camera = camera.unwrap_or(Camera::new(vec3(0., 0., 10.), 0., 0.));
         camera.aspect = ctx.swapchain.extent.width as f32 / ctx.swapchain.extent.height as f32;
-        let camera_uniform = ctx.device.create_buffer_typed(
+        let camera_uniform = camera.get_uniform(None);
+        let camera_uniform_gpu = ctx.device.create_buffer_typed(
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             MemoryLocation::GpuOnly,
         )?;
@@ -160,6 +164,7 @@ impl AppState {
             input: Input::new(),
             camera,
             camera_uniform,
+            camera_uniform_gpu,
 
             pause: false,
             timeline: Instant::now(),
@@ -210,9 +215,10 @@ impl AppState {
         self.camera.position = self.camera.rig.final_transform.position.into();
         self.camera.rotation = self.camera.rig.final_transform.rotation.into();
 
+        self.camera_uniform = self.camera.get_uniform(Some(&self.camera_uniform));
         self.staging_write.write_buffer(
-            self.camera_uniform.buffer,
-            bytes_of(&self.camera.get_uniform()),
+            self.camera_uniform_gpu.buffer,
+            bytes_of(&self.camera_uniform),
         );
 
         Ok(())

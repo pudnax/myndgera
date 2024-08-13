@@ -30,9 +30,10 @@ We take 13 bilinear samples of the source texture as such:
 */
 
 vec3 tex_lod(uint tex_id, vec2 uv, float lod) {
-    vec4 tex = textureLod(
-        nonuniformEXT(sampler2D(gtextures[tex_id], gsamplers[LINEAR_SAMPL])),
-        uv, lod);
+    vec4 tex =
+        textureLod(nonuniformEXT(sampler2D(gtextures[tex_id],
+                                           gsamplers[LINEAR_BORDER_SAMPL])),
+                   uv, lod);
     return tex.rgb;
 }
 

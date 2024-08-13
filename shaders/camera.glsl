@@ -4,6 +4,9 @@ struct Camera {
     vec4 pos;
     mat4 world_to_clip;
     mat4 clip_to_world;
+    mat4 prev_world_to_clip;
+    vec2 jitter;
+    vec2 prev_jitter;
 };
 
 layout(scalar, buffer_reference,

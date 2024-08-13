@@ -13,8 +13,9 @@ const SAMPLER_SET: u32 = 0;
 const IMAGE_SET: u32 = 1;
 const STORAGE_SET: u32 = 0;
 
-const LINEAR_SAMPLER_IDX: u32 = 0;
-const NEAREST_SAMPLER_IDX: u32 = 1;
+const LINEAR_EDGE_SAMPLER_IDX: u32 = 0;
+const LINEAR_BORDER_SAMPLER_IDX: u32 = 1;
+const NEAREST_SAMPLER_IDX: u32 = 2;
 
 pub const DUMMY_IMAGE_IDX: usize = 0;
 pub const DITHER_IMAGE_IDX: usize = 1;
@@ -284,9 +285,21 @@ impl TextureArena {
             .dst_set(sampled_set)
             .dst_binding(SAMPLER_SET)
             .image_info(std::slice::from_ref(&descriptor_image_info))
-            .dst_array_element(LINEAR_SAMPLER_IDX);
+            .dst_array_element(LINEAR_EDGE_SAMPLER_IDX);
         unsafe { device.update_descriptor_sets(&[desc_write], &[]) };
-        samplers[LINEAR_SAMPLER_IDX as usize] = sampler;
+        samplers[LINEAR_EDGE_SAMPLER_IDX as usize] = sampler;
+
+        sampler_create_info = sampler_create_info
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER);
+        let sampler = unsafe { device.create_sampler(&sampler_create_info, None)? };
+        let descriptor_image_info = vk::DescriptorImageInfo::default().sampler(sampler);
+        desc_write = desc_write
+            .dst_array_element(LINEAR_BORDER_SAMPLER_IDX)
+            .image_info(std::slice::from_ref(&descriptor_image_info));
+        unsafe { device.update_descriptor_sets(&[desc_write], &[]) };
+        samplers[LINEAR_BORDER_SAMPLER_IDX as usize] = sampler;
 
         sampler_create_info = sampler_create_info
             .mag_filter(vk::Filter::NEAREST)

@@ -101,6 +101,7 @@ impl Instance {
             khr::swapchain::NAME,
             ext::graphics_pipeline_library::NAME,
             khr::pipeline_library::NAME,
+            // TODO: consider dynamic_rendering_local_read
             khr::dynamic_rendering::NAME,
             ext::extended_dynamic_state2::NAME,
             ext::extended_dynamic_state::NAME,

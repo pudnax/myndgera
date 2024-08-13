@@ -11,6 +11,7 @@ use myndgera::*;
 use self::{
     bloom::{Bloom, BloomParams},
     math::{cos, erot, hash13, look_at, sin, smooth_floor},
+    taa::{Taa, TaaParams},
 };
 
 const NUM_LIGHTS: u32 = 4;
@@ -90,9 +91,10 @@ struct LineRaster {
     resolve_pass: ComputeHandle,
     postprocess_pass: RenderHandle,
     accumulate_images: Vec<ImageHandle>,
-    hdr_target: ImageHandle,
+    view_target: ViewTarget,
     depth_image: ImageHandle,
     bloom: Bloom,
+    taa: Taa,
     device: Arc<Device>,
 }
 
@@ -201,24 +203,7 @@ impl Example for LineRaster {
                     .push_image(image_info, ScreenRelation::Identity, &[])?;
             accumulate_images.push(image);
         }
-
-        let image_info = vk::ImageCreateInfo::default()
-            .extent(vk::Extent3D {
-                width: ctx.swapchain.extent.width,
-                height: ctx.swapchain.extent.height,
-                depth: 1,
-            })
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::B10G11R11_UFLOAT_PACK32)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .mip_levels(1)
-            .array_layers(1)
-            .tiling(vk::ImageTiling::OPTIMAL);
-        let hdr_target =
-            state
-                .texture_arena
-                .push_image(image_info, ScreenRelation::Identity, &[])?;
+        let view_target = ViewTarget::new(state, vk::Format::B10G11R11_UFLOAT_PACK32)?;
 
         let depth_image = state.texture_arena.push_image(
             image_info.format(vk::Format::R16_SFLOAT),
@@ -227,6 +212,7 @@ impl Example for LineRaster {
         )?;
 
         let bloom = Bloom::new(ctx, state)?;
+        let taa = Taa::new(ctx, state)?;
 
         Ok(Self {
             lights_buffer,
@@ -237,9 +223,10 @@ impl Example for LineRaster {
             resolve_pass,
             postprocess_pass,
             accumulate_images,
-            hdr_target,
+            view_target,
             depth_image,
             bloom,
+            taa,
             device: ctx.device.clone(),
         })
     }
@@ -277,6 +264,11 @@ impl Example for LineRaster {
         state
             .staging_write
             .write_buffer(self.lights_buffer.buffer, bytes_of(&buffer_data));
+
+        let extent = ctx.swapchain.extent();
+        state.camera.jitter = self
+            .taa
+            .get_jitter(state.stats.frame, extent.width, extent.height);
 
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
@@ -333,13 +325,13 @@ impl Example for LineRaster {
             };
         };
 
-        let raster_push_const = RasterPC {
+        let raster_push_constant = RasterPC {
             red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
             green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
             blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
             depth_image: texture_arena.get_storage_idx(self.depth_image, 0),
             noise_offset: rand::random::<Vec2>(),
-            camera_buffer: state.camera_uniform.address,
+            camera_buffer: state.camera_uniform_gpu.address,
             line_buffer: self.lines_buffer.address,
         };
 
@@ -348,7 +340,7 @@ impl Example for LineRaster {
             frame.push_constant(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
-                &[raster_push_const],
+                &[raster_push_constant],
             );
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
@@ -375,7 +367,7 @@ impl Example for LineRaster {
             frame.push_constant(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
-                &[raster_push_const],
+                &[raster_push_constant],
             );
             frame.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
@@ -383,7 +375,7 @@ impl Example for LineRaster {
                 &[texture_arena.sampled_set, texture_arena.storage_set],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-            frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 256), 1, 1);
+            frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 64), 1, 1);
         }
 
         global_barrier(
@@ -394,7 +386,9 @@ impl Example for LineRaster {
         {
             self.device.image_transition(
                 frame.command_buffer(),
-                &texture_arena.get_image(self.hdr_target).inner,
+                &texture_arena
+                    .get_image(*self.view_target.main_image())
+                    .inner,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::GENERAL,
             );
@@ -403,12 +397,12 @@ impl Example for LineRaster {
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[ResolvePC {
-                    target_image: texture_arena.get_storage_idx(self.hdr_target, 0),
+                    target_image: texture_arena.get_storage_idx(*self.view_target.main_image(), 0),
                     red_image: texture_arena.get_storage_idx(self.accumulate_images[0], 0),
                     green_image: texture_arena.get_storage_idx(self.accumulate_images[1], 0),
                     blue_image: texture_arena.get_storage_idx(self.accumulate_images[2], 0),
                     depth_image: texture_arena.get_storage_idx(self.depth_image, 0),
-                    camera_buffer: state.camera_uniform.address,
+                    camera_buffer: state.camera_uniform_gpu.address,
                 }],
             );
             frame.bind_descriptor_sets(
@@ -431,12 +425,26 @@ impl Example for LineRaster {
             vk::PipelineStageFlags2::COMPUTE_SHADER,
         );
 
+        self.taa.apply(
+            ctx,
+            state,
+            frame,
+            TaaParams {
+                view_target: &self.view_target,
+            },
+        );
+
+        global_barrier(
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+            vk::PipelineStageFlags2::COMPUTE_SHADER,
+        );
+
         self.bloom.apply(
             ctx,
             state,
             frame,
             BloomParams {
-                target_image: self.hdr_target,
+                target_image: *self.view_target.main_image(),
                 target_current_layout: vk::ImageLayout::GENERAL,
                 strength: 4. / 16.,
                 width: 2.,
@@ -461,8 +469,8 @@ impl Example for LineRaster {
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 &[PostProcessPC {
                     current_image: texture_arena.get_sampled_idx(state.swapchain_handles[idx], 0),
-                    hdr_sampled: texture_arena.get_sampled_idx(self.hdr_target, 0),
-                    hdr_storage: texture_arena.get_storage_idx(self.hdr_target, 0),
+                    hdr_sampled: texture_arena.get_sampled_idx(*self.view_target.main_image(), 0),
+                    hdr_storage: texture_arena.get_storage_idx(*self.view_target.main_image(), 0),
                 }],
             );
             frame.bind_descriptor_sets(
