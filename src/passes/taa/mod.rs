@@ -13,13 +13,24 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+struct ReprojectPC {
+    depth_image: u32,
+    motion_image: u32,
+    camera_buffer: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 struct TaaPC {
     src_image: u32,
     dst_image: u32,
+    history_image: u32,
+    motion_image: u32,
 }
 
 pub struct TaaParams<'a> {
     pub view_target: &'a ViewTarget,
+    pub depth_image: ImageHandle,
 }
 
 #[inline]
@@ -41,7 +52,7 @@ fn radical_inverse(mut n: u32, base: u32) -> f32 {
 pub struct Taa {
     history_image: ImageHandle,
     motion_image: ImageHandle,
-    // motion_pipeline: ComputeHandle,
+    reproject_pipeline: ComputeHandle,
     taa_pipeline: ComputeHandle,
 
     pub jitter_samples: Vec<Vec2>,
@@ -51,11 +62,19 @@ impl Taa {
     pub fn new(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            .size(mem::size_of::<TaaPC>() as u32);
+            .size(mem::size_of::<ReprojectPC>() as u32);
         let desc_layouts = [
             state.texture_arena.sampled_set_layout,
             state.texture_arena.storage_set_layout,
         ];
+        let reproject_pipeline = state.pipeline_arena.create_compute_pipeline(
+            "src/passes/taa/reproject.comp.glsl",
+            &[push_constant_range],
+            &desc_layouts,
+        )?;
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .size(mem::size_of::<TaaPC>() as u32);
         let taa_pipeline = state.pipeline_arena.create_compute_pipeline(
             "src/passes/taa/taa.comp.glsl",
             &[push_constant_range],
@@ -98,6 +117,7 @@ impl Taa {
         Ok(Self {
             history_image,
             motion_image,
+            reproject_pipeline,
             taa_pipeline,
 
             jitter_samples,
@@ -128,6 +148,9 @@ impl Taa {
         frame: &FrameGuard,
         params: TaaParams,
     ) {
+        let _marker = ctx
+            .device
+            .create_scoped_marker(frame.command_buffer(), "Taa Pass");
         let texture_arena = &mut state.texture_arena;
         let postprocess_write = params.view_target.post_process_write();
 
@@ -138,48 +161,86 @@ impl Taa {
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
-        unsafe {
-            ctx.device.cmd_pipeline_barrier2(
-                *frame.command_buffer(),
-                &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
-            )
-        };
+        ctx.device.pipeline_barrier(
+            frame.command_buffer(),
+            &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
+        );
 
-        let src_image = texture_arena.get_storage_idx(*postprocess_write.source, 0);
-        let dst_image = texture_arena.get_storage_idx(*postprocess_write.destination, 0);
-        let taa_push_constant = TaaPC {
-            src_image,
-            dst_image,
-        };
+        {
+            let reproject_push_constant = ReprojectPC {
+                motion_image: texture_arena.get_storage_idx(self.motion_image, 0),
+                depth_image: texture_arena.get_storage_idx(params.depth_image, 0),
+                camera_buffer: state.camera_uniform_gpu.address,
+            };
 
-        let pipeline = state.pipeline_arena.get_pipeline(self.taa_pipeline);
-        frame.push_constant(
-            pipeline.layout,
-            vk::ShaderStageFlags::COMPUTE,
-            &[taa_push_constant],
+            let pipeline = state.pipeline_arena.get_pipeline(self.reproject_pipeline);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                &[reproject_push_constant],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                &[texture_arena.sampled_set, texture_arena.storage_set],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+            const SUBGROUP_SIZE: u32 = 16;
+            let extent = ctx.swapchain.extent();
+            frame.dispatch(
+                dispatch_optimal(extent.width, SUBGROUP_SIZE),
+                dispatch_optimal(extent.height, SUBGROUP_SIZE),
+                1,
+            );
+        }
+
+        let barrier = vk::ImageMemoryBarrier2::default()
+            .subresource_range(COLOR_SUBRESOURCE_MASK)
+            .image(texture_arena.get_image(self.motion_image).inner)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
+        ctx.device.pipeline_barrier(
+            frame.command_buffer(),
+            &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
         );
-        frame.bind_descriptor_sets(
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            &[texture_arena.sampled_set, texture_arena.storage_set],
-        );
-        frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
-        const SUBGROUP_SIZE: u32 = 16;
-        let extent = ctx.swapchain.extent();
-        frame.dispatch(
-            dispatch_optimal(extent.width, SUBGROUP_SIZE),
-            dispatch_optimal(extent.height, SUBGROUP_SIZE),
-            1,
-        );
+
+        {
+            let taa_push_constant = TaaPC {
+                src_image: texture_arena.get_storage_idx(*postprocess_write.source, 0),
+                dst_image: texture_arena.get_storage_idx(*postprocess_write.destination, 0),
+                motion_image: texture_arena.get_storage_idx(self.motion_image, 0),
+                history_image: texture_arena.get_storage_idx(self.history_image, 0),
+            };
+
+            let pipeline = state.pipeline_arena.get_pipeline(self.taa_pipeline);
+            frame.push_constant(
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                &[taa_push_constant],
+            );
+            frame.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                &[texture_arena.sampled_set, texture_arena.storage_set],
+            );
+            frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+            const SUBGROUP_SIZE: u32 = 16;
+            let extent = ctx.swapchain.extent();
+            frame.dispatch(
+                dispatch_optimal(extent.width, SUBGROUP_SIZE),
+                dispatch_optimal(extent.height, SUBGROUP_SIZE),
+                1,
+            );
+        }
 
         let barrier = barrier
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS);
-        unsafe {
-            ctx.device.cmd_pipeline_barrier2(
-                *frame.command_buffer(),
-                &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
-            )
-        };
+        ctx.device.pipeline_barrier(
+            frame.command_buffer(),
+            &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
+        );
     }
 }

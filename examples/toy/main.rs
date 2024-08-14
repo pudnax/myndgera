@@ -77,16 +77,13 @@ impl Example for Toy {
             1,
         );
 
-        unsafe {
-            let memory_barrier = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS);
-            ctx.device.cmd_pipeline_barrier2(
-                *frame.command_buffer(),
-                &vk::DependencyInfo::default()
-                    .memory_barriers(std::slice::from_ref(&memory_barrier)),
-            )
-        };
+        let memory_barrier = vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS);
+        ctx.device.pipeline_barrier(
+            frame.command_buffer(),
+            &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier)),
+        );
 
         frame.begin_rendering(
             ctx.swapchain.get_current_image_view(),

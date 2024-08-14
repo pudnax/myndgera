@@ -314,15 +314,13 @@ impl Example for LineRaster {
         let texture_arena = &mut state.texture_arena;
 
         let global_barrier = |src, dst| {
-            unsafe {
-                let mem_barrier = vk::MemoryBarrier2::default()
-                    .src_stage_mask(src)
-                    .dst_stage_mask(dst);
-                self.device.cmd_pipeline_barrier2(
-                    *frame.command_buffer(),
-                    &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
-                )
-            };
+            let mem_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(src)
+                .dst_stage_mask(dst);
+            self.device.pipeline_barrier(
+                frame.command_buffer(),
+                &vk::DependencyInfo::default().memory_barriers(&[mem_barrier]),
+            )
         };
 
         let raster_push_constant = RasterPC {
@@ -431,6 +429,7 @@ impl Example for LineRaster {
             frame,
             TaaParams {
                 view_target: &self.view_target,
+                depth_image: self.depth_image,
             },
         );
 

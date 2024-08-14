@@ -312,10 +312,8 @@ impl Swapchain {
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&image_barrier));
-        unsafe {
-            self.device
-                .cmd_pipeline_barrier2(frame.command_buffer, &dependency_info)
-        };
+        self.device
+            .pipeline_barrier(&frame.command_buffer, &dependency_info);
 
         Ok(FrameGuard {
             frame,
@@ -338,10 +336,8 @@ impl Swapchain {
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR);
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&image_barrier));
-        unsafe {
-            self.device
-                .cmd_pipeline_barrier2(frame.command_buffer, &dependency_info)
-        };
+        self.device
+            .pipeline_barrier(&frame.command_buffer, &dependency_info);
 
         self.device.end_command_buffer(&frame.command_buffer)?;
 

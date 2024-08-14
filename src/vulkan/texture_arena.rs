@@ -119,6 +119,7 @@ impl ScreenRelation {
 }
 
 // TODO: Name Images
+#[derive(Debug)]
 pub struct Image {
     pub inner: vk::Image,
     pub views: [Option<vk::ImageView>; MAX_MIPCOUNT],

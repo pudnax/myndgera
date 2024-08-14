@@ -100,6 +100,10 @@ impl Bloom {
             state
                 .texture_arena
                 .push_image(texture_info, ScreenRelation::Half, &[])?;
+        // TODO: Force initialization of sampled views
+        for i in 0..miplevel_count {
+            state.texture_arena.get_sampled_idx(accum_texture, i as u32);
+        }
 
         Ok(Self {
             downsample_pass,
@@ -152,12 +156,10 @@ impl Bloom {
         };
 
         for i in 0..self.miplevel_count {
-            unsafe {
-                ctx.device.cmd_pipeline_barrier2(
-                    *frame.command_buffer(),
-                    &vk::DependencyInfo::default().image_memory_barriers(&image_barriers),
-                )
-            };
+            ctx.device.pipeline_barrier(
+                frame.command_buffer(),
+                &vk::DependencyInfo::default().image_memory_barriers(&image_barriers),
+            );
 
             let target_dims = uvec2(screen_extent.width, screen_extent.height) >> (i + 1);
 
@@ -211,12 +213,10 @@ impl Bloom {
         );
 
         for i in (0..self.miplevel_count).rev() {
-            unsafe {
-                ctx.device.cmd_pipeline_barrier2(
-                    *frame.command_buffer(),
-                    &vk::DependencyInfo::default().image_memory_barriers(&image_barriers),
-                )
-            };
+            ctx.device.pipeline_barrier(
+                frame.command_buffer(),
+                &vk::DependencyInfo::default().image_memory_barriers(&image_barriers),
+            );
 
             let source_dims = uvec2(screen_extent.width, screen_extent.height) >> (i + 1);
             let (target_lod, target_texture, target_dims);

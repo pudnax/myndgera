@@ -96,6 +96,14 @@ impl Device {
         Ok((image, memory))
     }
 
+    pub fn pipeline_barrier(
+        &self,
+        cbuff: &vk::CommandBuffer,
+        dependency_info: &vk::DependencyInfo,
+    ) {
+        unsafe { self.cmd_pipeline_barrier2(*cbuff, dependency_info) }
+    }
+
     pub fn image_transition(
         &self,
         command_buffer: &vk::CommandBuffer,
@@ -133,7 +141,7 @@ impl Device {
             .new_layout(new_layout);
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(std::slice::from_ref(&image_barrier));
-        unsafe { self.cmd_pipeline_barrier2(*command_buffer, &dependency_info) }
+        self.pipeline_barrier(command_buffer, &dependency_info)
     }
 
     pub fn destroy_image(&self, image: vk::Image, memory: Allocation) {

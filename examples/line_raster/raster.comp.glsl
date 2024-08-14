@@ -78,6 +78,7 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims, float start_depth,
     for (float s = 0; s < ray_len; s += step) {
         vec2 p = ray_start + ray_dir * s;
         ivec2 pix = ivec2(p);
+        if (!in_bounds(pix, dims)) { continue; }
         float curr_depth = mix(start_depth, end_depth, s / ray_len);
         float depth = imageLoad(gstoragef[pc.depth_img], pix).x;
         if (curr_depth > depth) {
@@ -85,7 +86,6 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims, float start_depth,
                        vec4(curr_depth, 0., 0., 0.));
         }
         vec3 col = ray.color.rgb * ray.color.w;
-        if (!in_bounds(pix, dims)) { continue; }
         draw_point(pix, col);
     }
 }
