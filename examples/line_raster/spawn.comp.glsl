@@ -104,7 +104,7 @@ void main() {
         // float throughput = 1. - float(i) / float(pc.num_bounces);
         Ray ray = Ray(vec4(col * 0.025, throughput), vec3(origin), vec3(end));
         pc.rays_ptr.rays[ray_idx + i] = ray;
-        throughput *= 0.97;
+        throughput *= 0.95;
 
         float t = pc.time * 0.5;
         t = floor(t) + pow(fract(t), 15.);

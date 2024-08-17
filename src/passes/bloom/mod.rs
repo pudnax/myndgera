@@ -102,7 +102,7 @@ impl Bloom {
                 .push_image(texture_info, ScreenRelation::Half, &[])?;
         // TODO: Force initialization of sampled views
         for i in 0..miplevel_count {
-            state.texture_arena.get_sampled_idx(accum_texture, i as u32);
+            state.texture_arena.get_sampled_idx(accum_texture, i);
         }
 
         Ok(Self {
