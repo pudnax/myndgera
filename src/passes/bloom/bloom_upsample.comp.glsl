@@ -15,8 +15,6 @@ layout(scalar, push_constant) uniform PushConstant {
     uint target_img_storage;
     float width;
     float strength;
-    uint source_lod;
-    uint target_lod;
     uint num_passes;
     bool is_final_pass;
 }
@@ -29,10 +27,10 @@ layout(set = 1, binding = 0) writeonly coherent
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-vec4 tex_lod(uint tex_id, vec2 uv, float lod) {
+vec4 tex_lod(uint tex_id, vec2 uv) {
     return textureLod(
         nonuniformEXT(sampler2D(gtextures[tex_id], gsamplers[LINEAR_SAMPL])),
-        uv, lod);
+        uv, 0);
 }
 
 void main() {
@@ -47,22 +45,20 @@ void main() {
     vec4 rgba =
         texelFetch(nonuniformEXT(sampler2D(gtextures[pc.target_img_sampled],
                                            gsamplers[LINEAR_SAMPL])),
-                   gid, int(pc.target_lod));
+                   gid, int(0));
 
-    float lod = pc.source_lod;
     uint source_img = pc.source_img;
     vec2 width = texel * pc.width;
     vec4 blur_sum = vec4(0);
-    blur_sum +=
-        tex_lod(source_img, uv + vec2(-1, -1) * width, lod) * 1.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(0, -1) * width, lod) * 2.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(1, -1) * width, lod) * 1.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(-1, 0) * width, lod) * 2.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(0, 0) * width, lod) * 4.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(1, 0) * width, lod) * 2.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(-1, 1) * width, lod) * 1.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(0, 1) * width, lod) * 2.0 / 16.0;
-    blur_sum += tex_lod(source_img, uv + vec2(1, 1) * width, lod) * 1.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(-1, -1) * width) * 1.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(0, -1) * width) * 2.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(1, -1) * width) * 1.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(-1, 0) * width) * 2.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(0, 0) * width) * 4.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(1, 0) * width) * 2.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(-1, 1) * width) * 1.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(0, 1) * width) * 2.0 / 16.0;
+    blur_sum += tex_lod(source_img, uv + vec2(1, 1) * width) * 1.0 / 16.0;
 
     if (pc.is_final_pass) {
         // Conserve energy

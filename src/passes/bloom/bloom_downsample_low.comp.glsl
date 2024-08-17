@@ -32,8 +32,7 @@ void main() {
     // Center of written pixel
     const vec2 uv = (vec2(gid) + 0.5) / pc.target_dim;
 
-    InitializeSharedMemory(ivec2(pc.target_dim), ivec2(pc.source_dim),
-                           pc.source_lod);
+    InitializeSharedMemory(ivec2(pc.target_dim), ivec2(pc.source_dim));
 
     barrier();
 

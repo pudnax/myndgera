@@ -26,7 +26,6 @@ struct DownsamplePC {
     target_storage_img_idx: u32,
     source_dims: UVec2,
     target_dims: UVec2,
-    source_lod: u32,
 }
 
 #[repr(C)]
@@ -39,8 +38,6 @@ struct UpsamplePC {
     target_storage_img_idx: u32,
     width: f32,
     strength: f32,
-    source_lod: u32,
-    target_lod: u32,
     num_passes: u32,
     is_final_pass: u32,
 }
@@ -100,10 +97,6 @@ impl Bloom {
             state
                 .texture_arena
                 .push_image(texture_info, ScreenRelation::Half, &[])?;
-        // TODO: Force initialization of sampled views
-        for i in 0..miplevel_count {
-            state.texture_arena.get_sampled_idx(accum_texture, i);
-        }
 
         Ok(Self {
             downsample_pass,
@@ -184,11 +177,11 @@ impl Bloom {
                 downsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[DownsamplePC {
-                    source_sampled_img_idx: texture_arena.get_sampled_idx(source_texture, 0),
+                    source_sampled_img_idx: texture_arena
+                        .get_sampled_idx(source_texture, source_lod),
                     target_storage_img_idx: texture_arena.get_storage_idx(self.accum_texture, i),
                     source_dims,
                     target_dims,
-                    source_lod,
                 }],
             );
             frame.bind_descriptor_sets(
@@ -234,16 +227,15 @@ impl Bloom {
                 upsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[UpsamplePC {
-                    source_sampled_img_idx: texture_arena.get_sampled_idx(self.accum_texture, 0),
-                    target_sampled_img_idx: texture_arena.get_sampled_idx(target_texture, 0),
+                    source_sampled_img_idx: texture_arena.get_sampled_idx(self.accum_texture, i),
+                    target_sampled_img_idx: texture_arena
+                        .get_sampled_idx(target_texture, target_lod),
                     target_storage_img_idx: texture_arena
                         .get_storage_idx(target_texture, target_lod),
                     source_dims,
                     target_dims,
                     width: params.width,
                     strength: params.strength,
-                    source_lod: i,
-                    target_lod,
                     num_passes: self.miplevel_count,
                     is_final_pass: (i == 0) as u32,
                 }],

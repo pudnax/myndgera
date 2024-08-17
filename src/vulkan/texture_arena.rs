@@ -1,7 +1,10 @@
 use std::{mem::ManuallyDrop, sync::Arc};
 
 use anyhow::{Context, Result};
-use ash::vk::{self, Handle};
+use ash::{
+    prelude::VkResult,
+    vk::{self, Handle},
+};
 use gpu_allocator::{vulkan::Allocation, MemoryLocation};
 use slotmap::{SecondaryMap, SlotMap};
 
@@ -137,7 +140,6 @@ impl Image {
                 .filter_map(|view| view.as_ref())
                 .filter(|view| !view.is_null())
             {
-                // TODO: After naming check exactly what views are being destroyed
                 unsafe { device.destroy_image_view(*view, None) };
             }
         }
@@ -399,38 +401,26 @@ impl TextureArena {
     }
 
     pub fn get_sampled_idx(&mut self, handle: ImageHandle, mip_level: u32) -> u32 {
+        if let Some(info) = self.images[handle].info {
+            assert!(mip_level < info.mip_levels);
+        }
         match self.sampled_indices[handle][mip_level as usize] {
             Some(idx) => idx,
             None => {
                 let image = &mut self.images[handle];
-                let view = if let Some(view) = image.views[mip_level as usize] {
-                    view
-                } else {
-                    let view = unsafe {
-                        self.device
-                            .create_image_view(
-                                &vk::ImageViewCreateInfo::default()
-                                    .view_type(vk::ImageViewType::TYPE_2D)
-                                    .image(image.inner)
-                                    .format(image.info.unwrap().format)
-                                    .subresource_range(
-                                        vk::ImageSubresourceRange::default()
-                                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                            .base_mip_level(mip_level)
-                                            .level_count(if mip_level == 0 {
-                                                vk::REMAINING_MIP_LEVELS
-                                            } else {
-                                                1
-                                            })
-                                            .base_array_layer(0)
-                                            .layer_count(vk::REMAINING_ARRAY_LAYERS),
-                                    ),
-                                None,
-                            )
-                            .unwrap()
-                    };
-                    image.views[mip_level as usize] = Some(view);
-                    view
+                let view = match image.views[mip_level as usize] {
+                    Some(view) => view,
+                    None => {
+                        let view = make_image_view(
+                            &self.device,
+                            &image.inner,
+                            image.info.unwrap().format,
+                            mip_level,
+                        )
+                        .unwrap();
+                        image.views[mip_level as usize] = Some(view);
+                        view
+                    }
                 };
 
                 let sampled_idx = self.last_sampled_idx;
@@ -446,39 +436,25 @@ impl TextureArena {
     pub fn get_storage_idx(&mut self, handle: ImageHandle, mip_level: u32) -> u32 {
         if let Some(info) = self.images[handle].info {
             assert!(info.usage.contains(vk::ImageUsageFlags::STORAGE));
+            assert!(mip_level < info.mip_levels);
         }
         match self.storage_indices[handle][mip_level as usize] {
             Some(idx) => idx,
             None => {
                 let image = &mut self.images[handle];
-                let view = if let Some(view) = image.views[mip_level as usize] {
-                    view
-                } else {
-                    let view = unsafe {
-                        self.device
-                            .create_image_view(
-                                &vk::ImageViewCreateInfo::default()
-                                    .view_type(vk::ImageViewType::TYPE_2D)
-                                    .image(image.inner)
-                                    .format(image.info.unwrap().format)
-                                    .subresource_range(
-                                        vk::ImageSubresourceRange::default()
-                                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                            .base_mip_level(if mip_level == 0 {
-                                                vk::REMAINING_MIP_LEVELS
-                                            } else {
-                                                1
-                                            })
-                                            .level_count(1)
-                                            .base_array_layer(0)
-                                            .layer_count(vk::REMAINING_ARRAY_LAYERS),
-                                    ),
-                                None,
-                            )
-                            .unwrap()
-                    };
-                    image.views[mip_level as usize] = Some(view);
-                    view
+                let view = match image.views[mip_level as usize] {
+                    Some(view) => view,
+                    None => {
+                        let view = make_image_view(
+                            &self.device,
+                            &image.inner,
+                            image.info.unwrap().format,
+                            mip_level,
+                        )
+                        .unwrap();
+                        image.views[mip_level as usize] = Some(view);
+                        view
+                    }
                 };
 
                 let storage_idx = self.last_storage_idx;
@@ -513,27 +489,12 @@ impl TextureArena {
                 .enumerate()
                 .filter_map(|(i, view)| view.as_mut().map(|v| (i, v)))
             {
-                *view = unsafe {
-                    self.device.create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .image(image.inner)
-                            .format(image.info.unwrap().format)
-                            .subresource_range(
-                                vk::ImageSubresourceRange::default()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .base_mip_level(mip_level as u32)
-                                    .level_count(if mip_level == 0 {
-                                        vk::REMAINING_MIP_LEVELS
-                                    } else {
-                                        1
-                                    })
-                                    .base_array_layer(0)
-                                    .layer_count(vk::REMAINING_ARRAY_LAYERS),
-                            ),
-                        None,
-                    )?
-                };
+                *view = make_image_view(
+                    &self.device,
+                    &image.inner,
+                    image.info.unwrap().format,
+                    mip_level as u32,
+                )?;
 
                 if let Some(idx) = self.sampled_indices[handle][mip_level] {
                     update_sampled_set(&self.device, &self.sampled_set, idx, view);
@@ -604,33 +565,35 @@ impl TextureArena {
             })?;
         }
 
-        let view = self.device.create_2d_view(&image, info.format, 0)?;
         let mut views = [None; MAX_MIPCOUNT];
-        views[0] = Some(view);
+        let mut sampled_indices = [None; MAX_MIPCOUNT];
+        let mut storage_indices = [None; MAX_MIPCOUNT];
+        for (i, view) in views.iter_mut().enumerate().take(info.mip_levels as usize) {
+            let new_view = make_image_view(&self.device, &image, info.format, i as u32)?;
+            *view = Some(new_view);
+
+            {
+                let sampled_idx = self.last_sampled_idx;
+                update_sampled_set(&self.device, &self.sampled_set, sampled_idx, &new_view);
+                sampled_indices[i] = Some(sampled_idx);
+                self.last_sampled_idx += 1;
+            }
+            if info.usage.contains(vk::ImageUsageFlags::STORAGE) {
+                let storage_idx = self.last_storage_idx;
+                update_storage_set(&self.device, &self.storage_set, storage_idx, &new_view);
+                storage_indices[i] = Some(storage_idx);
+                self.last_storage_idx += 1;
+            }
+        }
+
         let handle = self.images.insert(Image {
             inner: image,
             views,
             info: Some(info),
             memory: Some(memory),
         });
-
-        {
-            let sampled_idx = self.last_sampled_idx;
-            update_sampled_set(&self.device, &self.sampled_set, sampled_idx, &view);
-            let mut indices = [None; MAX_MIPCOUNT];
-            indices[0] = Some(sampled_idx);
-            self.sampled_indices.insert(handle, indices);
-            self.last_sampled_idx += 1;
-        }
-
-        if info.usage.contains(vk::ImageUsageFlags::STORAGE) {
-            let storage_idx = self.last_storage_idx;
-            update_storage_set(&self.device, &self.storage_set, storage_idx, &view);
-            let mut indices = [None; MAX_MIPCOUNT];
-            indices[0] = Some(storage_idx);
-            self.storage_indices.insert(handle, indices);
-            self.last_storage_idx += 1;
-        }
+        self.sampled_indices.insert(handle, sampled_indices);
+        self.storage_indices.insert(handle, storage_indices);
 
         if let Some(factor) = screen_relation.as_f32() {
             self.screen_sized_images.insert(handle, factor);
@@ -691,12 +654,7 @@ impl TextureArena {
     }
 }
 
-pub fn update_sampled_set(
-    device: &Device,
-    set: &vk::DescriptorSet,
-    idx: u32,
-    view: &vk::ImageView,
-) {
+fn update_sampled_set(device: &Device, set: &vk::DescriptorSet, idx: u32, view: &vk::ImageView) {
     let image_info = vk::DescriptorImageInfo::default()
         .image_view(*view)
         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
@@ -709,12 +667,7 @@ pub fn update_sampled_set(
     unsafe { device.update_descriptor_sets(&[write], &[]) };
 }
 
-pub fn update_storage_set(
-    device: &Device,
-    set: &vk::DescriptorSet,
-    idx: u32,
-    view: &vk::ImageView,
-) {
+fn update_storage_set(device: &Device, set: &vk::DescriptorSet, idx: u32, view: &vk::ImageView) {
     let image_info = vk::DescriptorImageInfo::default()
         .image_view(*view)
         .image_layout(vk::ImageLayout::GENERAL);
@@ -725,6 +678,35 @@ pub fn update_storage_set(
         .image_info(std::slice::from_ref(&image_info))
         .dst_array_element(idx);
     unsafe { device.update_descriptor_sets(&[write], &[]) };
+}
+
+fn make_image_view(
+    device: &Device,
+    image: &vk::Image,
+    format: vk::Format,
+    base_mip_level: u32,
+) -> VkResult<vk::ImageView> {
+    unsafe {
+        device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .image(*image)
+                .format(format)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(base_mip_level)
+                        .level_count(if base_mip_level == 0 {
+                            vk::REMAINING_MIP_LEVELS
+                        } else {
+                            1
+                        })
+                        .base_array_layer(0)
+                        .layer_count(1),
+                ),
+            None,
+        )
+    }
 }
 
 impl Drop for TextureArena {
