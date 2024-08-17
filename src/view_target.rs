@@ -31,12 +31,18 @@ impl ViewTarget {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let a = state
-            .texture_arena
-            .push_image(image_info, crate::ScreenRelation::Identity, &[])?;
-        let b = state
-            .texture_arena
-            .push_image(image_info, crate::ScreenRelation::Identity, &[])?;
+        let a = state.texture_arena.push_image(
+            image_info,
+            crate::ScreenRelation::Identity,
+            &[],
+            Some("View Target A"),
+        )?;
+        let b = state.texture_arena.push_image(
+            image_info,
+            crate::ScreenRelation::Identity,
+            &[],
+            Some("View Target B"),
+        )?;
 
         Ok(Self {
             images: [a, b],

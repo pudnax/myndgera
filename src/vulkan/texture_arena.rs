@@ -124,6 +124,7 @@ impl ScreenRelation {
 // TODO: Name Images
 #[derive(Debug)]
 pub struct Image {
+    name: Option<String>,
     pub inner: vk::Image,
     pub views: [Option<vk::ImageView>; MAX_MIPCOUNT],
     pub info: Option<vk::ImageCreateInfo<'static>>,
@@ -131,6 +132,13 @@ pub struct Image {
 }
 
 impl Image {
+    pub fn name(&self) -> Option<&str> {
+        match self.name.as_ref() {
+            Some(name) => Some(name),
+            None => None,
+        }
+    }
+
     fn destroy(&mut self, device: &Device) {
         if let Some(memory) = self.memory.take() {
             device.destroy_image(self.inner, memory);
@@ -351,8 +359,12 @@ impl TextureArena {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        let handle =
-            texture_arena.push_image(image_info, ScreenRelation::None, &[255, 255, 0, 255])?;
+        let handle = texture_arena.push_image(
+            image_info,
+            ScreenRelation::None,
+            &[255, 255, 0, 255],
+            Some("Dummy Image"),
+        )?;
         texture_arena.default_images.push(handle);
         assert_eq!(
             DUMMY_IMAGE_IDX as u32,
@@ -374,7 +386,12 @@ impl TextureArena {
                 .mip_levels(1)
                 .array_layers(1)
                 .tiling(vk::ImageTiling::OPTIMAL);
-            let handle = texture_arena.push_image(info, ScreenRelation::None, dds.get_data(0)?)?;
+            let handle = texture_arena.push_image(
+                info,
+                ScreenRelation::None,
+                dds.get_data(0)?,
+                Some(name),
+            )?;
             texture_arena.default_images.push(handle);
             texture_arena
                 .device
@@ -482,6 +499,9 @@ impl TextureArena {
             image.destroy(&self.device);
             image.inner = new_image;
             image.memory = Some(new_memory);
+            if let Some(name) = image.name.as_ref() {
+                self.device.name_object(image.inner, name);
+            }
 
             for (mip_level, view) in image
                 .views
@@ -495,6 +515,10 @@ impl TextureArena {
                     image.info.unwrap().format,
                     mip_level as u32,
                 )?;
+                if let Some(name) = image.name.as_ref() {
+                    self.device
+                        .name_object(*view, &format!("{name} View {mip_level}"));
+                }
 
                 if let Some(idx) = self.sampled_indices[handle][mip_level] {
                     update_sampled_set(&self.device, &self.sampled_set, idx, view);
@@ -514,6 +538,7 @@ impl TextureArena {
         mut info: vk::ImageCreateInfo<'static>,
         screen_relation: ScreenRelation,
         data: &[u8],
+        name: Option<&str>,
     ) -> Result<ImageHandle> {
         if !data.is_empty() {
             info.usage |= vk::ImageUsageFlags::TRANSFER_DST;
@@ -523,6 +548,9 @@ impl TextureArena {
             info.extent.height = (factor * info.extent.height as f32) as u32;
         }
         let (image, memory) = self.device.create_image(&info, MemoryLocation::GpuOnly)?;
+        if let Some(name) = name {
+            self.device.name_object(image, name);
+        }
 
         if !data.is_empty() {
             let mut staging = self.device.create_buffer(
@@ -571,6 +599,10 @@ impl TextureArena {
         for (i, view) in views.iter_mut().enumerate().take(info.mip_levels as usize) {
             let new_view = make_image_view(&self.device, &image, info.format, i as u32)?;
             *view = Some(new_view);
+            if let Some(name) = name {
+                self.device
+                    .name_object(new_view, &format!("{name} View {i}"));
+            }
 
             {
                 let sampled_idx = self.last_sampled_idx;
@@ -591,6 +623,7 @@ impl TextureArena {
             views,
             info: Some(info),
             memory: Some(memory),
+            name: name.map(|name| name.to_owned()),
         });
         self.sampled_indices.insert(handle, sampled_indices);
         self.storage_indices.insert(handle, storage_indices);
@@ -614,6 +647,7 @@ impl TextureArena {
             views,
             info: None,
             memory: None,
+            name: None,
         });
 
         {

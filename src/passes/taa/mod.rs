@@ -95,14 +95,18 @@ impl Taa {
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let motion_image =
-            state
-                .texture_arena
-                .push_image(texture_info, ScreenRelation::Identity, &[])?;
-        let history_image =
-            state
-                .texture_arena
-                .push_image(texture_info, ScreenRelation::Identity, &[])?;
+        let motion_image = state.texture_arena.push_image(
+            texture_info,
+            ScreenRelation::Identity,
+            &[],
+            Some("Motion Image"),
+        )?;
+        let history_image = state.texture_arena.push_image(
+            texture_info,
+            ScreenRelation::Identity,
+            &[],
+            Some("History Image"),
+        )?;
 
         let n = 16;
         let jitter_samples = (0..n)

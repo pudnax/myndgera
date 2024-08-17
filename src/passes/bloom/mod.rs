@@ -93,10 +93,12 @@ impl Bloom {
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let accum_texture =
-            state
-                .texture_arena
-                .push_image(texture_info, ScreenRelation::Half, &[])?;
+        let accum_texture = state.texture_arena.push_image(
+            texture_info,
+            ScreenRelation::Half,
+            &[],
+            Some("Accumulation Texture"),
+        )?;
 
         Ok(Self {
             downsample_pass,

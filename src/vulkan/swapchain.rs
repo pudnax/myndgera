@@ -151,6 +151,10 @@ impl Swapchain {
             .iter()
             .map(|img| device.create_2d_view(img, format.format, 0))
             .collect::<VkResult<Vec<_>>>()?;
+        views
+            .iter()
+            .enumerate()
+            .for_each(|(i, &view)| device.name_object(view, &format!("Swapchain View {i}")));
 
         let frames = VecDeque::new();
 
@@ -234,6 +238,10 @@ impl Swapchain {
             .iter()
             .map(|img| device.create_2d_view(img, self.format.format, 0))
             .collect::<VkResult<Vec<_>>>()?;
+        self.views
+            .iter()
+            .enumerate()
+            .for_each(|(i, &view)| device.name_object(view, &format!("Swapchain View {i}")));
 
         let memory_reqs = unsafe { device.get_image_memory_requirements(self.images[0]) };
         self.image_dimensions =

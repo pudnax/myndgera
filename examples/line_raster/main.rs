@@ -196,11 +196,13 @@ impl Example for LineRaster {
             .mip_levels(1)
             .array_layers(1)
             .tiling(vk::ImageTiling::OPTIMAL);
-        for _ in 0..3 {
-            let image =
-                state
-                    .texture_arena
-                    .push_image(image_info, ScreenRelation::Identity, &[])?;
+        for i in 0..3 {
+            let image = state.texture_arena.push_image(
+                image_info,
+                ScreenRelation::Identity,
+                &[],
+                Some(&format!("Ray Image {i}")),
+            )?;
             accumulate_images.push(image);
         }
         let view_target = ViewTarget::new(state, vk::Format::B10G11R11_UFLOAT_PACK32)?;
@@ -209,6 +211,7 @@ impl Example for LineRaster {
             image_info.format(vk::Format::R16_SFLOAT),
             ScreenRelation::Identity,
             &[],
+            Some("Depth Image"),
         )?;
 
         let bloom = Bloom::new(ctx, state)?;
