@@ -4,6 +4,7 @@ use std::{f32::consts::PI, mem, sync::Arc};
 use anyhow::{Ok, Result};
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
+use dolly::prelude::YawPitch;
 use glam::{vec3, Mat4, Vec2, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use myndgera::*;
@@ -217,6 +218,19 @@ impl Example for LineRaster {
         let bloom = Bloom::new(ctx, state)?;
         let taa = Taa::new(ctx, state)?;
 
+        state.key_map = {
+            use winit::keyboard::KeyCode::*;
+            KeyboardMap::new()
+                .bind(KeyW, ("move_fwd", 1.0))
+                .bind(KeyS, ("move_fwd", -1.0))
+                .bind(KeyD, ("move_right", 1.0))
+                .bind(KeyA, ("move_right", -1.0))
+                .bind(KeyQ, ("move_up", -1.0))
+                .bind(KeyE, ("move_up", 1.0))
+                .bind(ShiftLeft, ("boost", 1.0))
+                .bind(ControlLeft, ("boost", -1.0))
+        };
+
         Ok(Self {
             lights_buffer,
             lines_buffer,
@@ -303,6 +317,31 @@ impl Example for LineRaster {
             ctx.device
                 .cmd_dispatch(cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
         }
+
+        if state.input.mouse_state.left_held() {
+            let sensitivity = 0.5;
+            state.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
+                -sensitivity * state.input.mouse_state.delta.x,
+                -sensitivity * state.input.mouse_state.delta.y,
+            );
+        }
+
+        let dt = state.stats.time_delta;
+        let key_map = state.key_map.map(&state.input.keyboard_state);
+        let translation = Vec3::new(
+            key_map["move_right"],
+            key_map["move_up"],
+            -key_map["move_fwd"],
+        );
+
+        let rotation: glam::Quat = state.camera.rig.final_transform.rotation.into();
+        let move_vec = rotation * translation.clamp_length_max(1.0) * 4.0f32.powf(key_map["boost"]);
+
+        state
+            .camera
+            .rig
+            .driver_mut::<dolly::drivers::Position>()
+            .translate(move_vec * dt * 5.0);
 
         Ok(())
     }

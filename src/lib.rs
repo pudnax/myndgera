@@ -13,9 +13,8 @@ mod view_target;
 mod vulkan;
 mod watcher;
 
-use dolly::drivers::YawPitch;
 use either::Either;
-use glam::{vec2, vec3, Vec3};
+use glam::{vec2, vec3};
 use gpu_allocator::MemoryLocation;
 use std::{
     io::Write,
@@ -34,7 +33,7 @@ use winit::{
 
 pub use self::{
     camera::*,
-    input::Input,
+    input::*,
     passes::*,
     recorder::{RecordEvent, Recorder},
     shader_compiler::ShaderCompiler,
@@ -103,6 +102,7 @@ pub trait Example: 'static + Sized {
 
 pub struct AppState {
     pub input: Input,
+    pub key_map: KeyboardMap,
     pub camera: Camera,
     pub camera_uniform: CameraUniform,
     pub camera_uniform_gpu: BufferTyped<CameraUniform>,
@@ -162,6 +162,7 @@ impl AppState {
         Ok(Self {
             stats,
             input: Input::new(),
+            key_map: KeyboardMap::new(),
             camera,
             camera_uniform,
             camera_uniform_gpu,
@@ -187,30 +188,7 @@ impl AppState {
     fn update(&mut self, _ctx: &RenderContext, &_cbuff: &vk::CommandBuffer) -> Result<()> {
         self.input.process_position(&mut self.stats.pos);
 
-        if self.input.mouse_state.left_held() {
-            let sensitivity = 0.5;
-            self.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
-                -sensitivity * self.input.mouse_state.delta.x,
-                -sensitivity * self.input.mouse_state.delta.y,
-            );
-        }
-
-        let dt = self.stats.time_delta;
-        let move_right = self.input.move_right - self.input.move_left;
-        let move_up = self.input.move_up - self.input.move_down;
-        let move_fwd = self.input.move_backward - self.input.move_forward;
-
-        let rotation: glam::Quat = self.camera.rig.final_transform.rotation.into();
-        let move_vec = rotation
-            * Vec3::new(move_right, move_up, move_fwd).clamp_length_max(1.0)
-            * 4.0f32.powf(self.input.boost);
-
-        self.camera
-            .rig
-            .driver_mut::<dolly::drivers::Position>()
-            .translate(move_vec * dt * 5.0);
-
-        self.camera.rig.update(dt as _);
+        self.camera.rig.update(self.stats.time_delta);
 
         self.camera.position = self.camera.rig.final_transform.position.into();
         self.camera.rotation = self.camera.rig.final_transform.rotation.into();
@@ -348,8 +326,9 @@ impl<E: Example> AppInit<E> {
             self.device.one_time_submit(|device, cbuff| {
                 let _marker = device.create_scoped_marker(&cbuff, "State Update");
 
-                state.update(&self.render, &cbuff)?;
+                state.input.tick();
                 self.example.update(&self.render, state, &cbuff)?;
+                state.update(&self.render, &cbuff)?;
 
                 state.staging_write.consume_pending_writes(&cbuff)?;
 
@@ -428,6 +407,8 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        self.state.input.update_on_window_input(&event);
+
         match event {
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
@@ -513,11 +494,6 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
                     _ => {}
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                self.state.input.update_window_input(&event);
-                self.example.input(&self.state);
-            }
-
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -586,6 +562,8 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
             }
             _ => {}
         }
+
+        self.example.input(&self.state);
     }
 
     fn device_event(
@@ -594,7 +572,7 @@ impl<E: Example> ApplicationHandler<UserEvent> for AppInit<E> {
         _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
-        self.state.input.update_device_input(event);
+        self.state.input.update_on_device_input(event);
     }
 
     fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {

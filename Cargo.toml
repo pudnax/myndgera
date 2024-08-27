@@ -10,7 +10,7 @@ winit = "0.30"
 ash = "0.38"
 ash-window = "0.13"
 bitflags = "2"
-bytemuck = { version = "1.16", features = ["derive", "min_const_generics"] }
+bytemuck = { version = "1.17", features = ["derive", "min_const_generics"] }
 ahash = "0.8"
 slotmap = "1.0"
 either = "1.13"
@@ -35,7 +35,7 @@ shaderc = "0.8"
 ddsfile = "0.5.2"
 log = "0.4.22"
 pretty-type-name = "1.0.1"
-glam = { version = "0.28.0", features = ["bytemuck", "mint", "rand"] }
+glam = { version = "0.28", features = ["bytemuck", "mint", "rand"] }
 dolly = "0.6"
 rand = "0.8"
 gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
