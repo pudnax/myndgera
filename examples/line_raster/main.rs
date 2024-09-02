@@ -296,27 +296,22 @@ impl Example for LineRaster {
             lights_buffer: self.lights_buffer.address,
             line_buffer: self.lines_buffer.address,
         };
-        unsafe {
-            ctx.device.cmd_bind_descriptor_sets(
-                cbuff,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[state.texture_arena.sampled_set],
-                &[],
-            );
-            ctx.device.cmd_push_constants(
-                cbuff,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                bytes_of(&spawn_push_constant),
-            );
-            ctx.device
-                .cmd_bind_pipeline(cbuff, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
-            ctx.device
-                .cmd_dispatch(cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
-        }
+        ctx.device.bind_descriptor_sets(
+            &cbuff,
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            &[state.texture_arena.sampled_set],
+        );
+        ctx.device.bind_push_constants(
+            &cbuff,
+            pipeline.layout,
+            vk::ShaderStageFlags::COMPUTE,
+            bytes_of(&spawn_push_constant),
+        );
+        ctx.device
+            .bind_pipeline(&cbuff, vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+        ctx.device
+            .dispatch(&cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
 
         if state.input.mouse_state.left_held() {
             let sensitivity = 0.5;
@@ -377,7 +372,7 @@ impl Example for LineRaster {
 
         {
             let pipeline = state.pipeline_arena.get_pipeline(self.clear_pass);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[raster_push_constant],
@@ -404,7 +399,7 @@ impl Example for LineRaster {
 
         {
             let pipeline = state.pipeline_arena.get_pipeline(self.raster_pass);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[raster_push_constant],
@@ -433,7 +428,7 @@ impl Example for LineRaster {
                 vk::ImageLayout::GENERAL,
             );
             let pipeline = state.pipeline_arena.get_pipeline(self.resolve_pass);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[ResolvePC {
@@ -505,7 +500,7 @@ impl Example for LineRaster {
                 [0., 0.025, 0.025, 1.0],
             );
             let pipeline = state.pipeline_arena.get_pipeline(self.postprocess_pass);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 &[PostProcessPC {
@@ -523,7 +518,7 @@ impl Example for LineRaster {
                 ],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
-            frame.draw(3, 0, 1, 0);
+            frame.draw(3, 1, 0, 0);
             frame.end_rendering();
         }
 

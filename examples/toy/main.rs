@@ -62,7 +62,7 @@ impl Example for Toy {
             | vk::ShaderStageFlags::FRAGMENT
             | vk::ShaderStageFlags::COMPUTE;
         let pipeline = state.pipeline_arena.get_pipeline(self.compute_pipeline);
-        frame.push_constant(pipeline.layout, stages, &[state.stats]);
+        frame.bind_push_constants(pipeline.layout, stages, &[state.stats]);
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
@@ -91,7 +91,7 @@ impl Example for Toy {
             [0., 0.025, 0.025, 1.0],
         );
         let pipeline = state.pipeline_arena.get_pipeline(self.render_pipeline);
-        frame.push_constant(
+        frame.bind_push_constants(
             pipeline.layout,
             vk::ShaderStageFlags::VERTEX
                 | vk::ShaderStageFlags::FRAGMENT

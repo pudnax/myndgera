@@ -175,7 +175,7 @@ impl Bloom {
 
             let downsample_pipeline = state.pipeline_arena.get_pipeline(pipeline);
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, downsample_pipeline);
-            frame.push_constant(
+            frame.bind_push_constants(
                 downsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[DownsamplePC {
@@ -225,7 +225,7 @@ impl Bloom {
                 target_dims = uvec2(screen_extent.width, screen_extent.height) >> i;
             }
 
-            frame.push_constant(
+            frame.bind_push_constants(
                 upsample_pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[UpsamplePC {

@@ -419,11 +419,9 @@ impl FrameGuard {
             .render_area(self.extent.into())
             .layer_count(1)
             .color_attachments(&color_attachments);
-        unsafe {
-            self.device
-                .dynamic_rendering
-                .cmd_begin_rendering(self.frame.command_buffer, &rendering_info)
-        };
+        self.device
+            .begin_rendering(self.command_buffer(), &rendering_info);
+
         let viewport = vk::Viewport {
             x: 0.0,
             y: self.extent.height as f32,
@@ -440,61 +438,47 @@ impl FrameGuard {
     }
 
     pub fn draw(
-        &mut self,
+        &self,
         vertex_count: u32,
-        first_vertex: u32,
         instance_count: u32,
+        first_vertex: u32,
         first_instance: u32,
     ) {
-        unsafe {
-            self.device.cmd_draw(
-                self.frame.command_buffer,
-                vertex_count,
-                instance_count,
-                first_vertex,
-                first_instance,
-            )
-        };
+        self.device.draw(
+            self.command_buffer(),
+            vertex_count,
+            instance_count,
+            first_vertex,
+            first_instance,
+        );
     }
 
     pub fn draw_indexed(
-        &mut self,
+        &self,
         index_count: u32,
+        instance_count: u32,
         first_index: u32,
         vertex_offset: i32,
-        instance_count: u32,
         first_instance: u32,
     ) {
-        unsafe {
-            self.device.cmd_draw_indexed(
-                self.frame.command_buffer,
-                index_count,
-                instance_count,
-                first_index,
-                vertex_offset,
-                first_instance,
-            )
-        };
+        self.device.draw_indexed(
+            self.command_buffer(),
+            index_count,
+            instance_count,
+            first_index,
+            vertex_offset,
+            first_instance,
+        );
     }
 
     pub fn bind_index_buffer(&self, buffer: vk::Buffer, offset: u64) {
-        unsafe {
-            self.device.cmd_bind_index_buffer(
-                self.frame.command_buffer,
-                buffer,
-                offset,
-                vk::IndexType::UINT32,
-            )
-        };
+        self.device
+            .bind_index_buffer(self.command_buffer(), buffer, offset);
     }
 
     pub fn bind_vertex_buffer(&self, buffer: vk::Buffer) {
-        let buffers = [buffer];
-        let offsets = [0];
-        unsafe {
-            self.device
-                .cmd_bind_vertex_buffers(self.frame.command_buffer, 0, &buffers, &offsets)
-        };
+        self.device
+            .bind_vertex_buffer(self.command_buffer(), buffer);
     }
 
     pub fn bind_descriptor_sets(
@@ -503,67 +487,42 @@ impl FrameGuard {
         pipeline_layout: vk::PipelineLayout,
         descriptor_sets: &[vk::DescriptorSet],
     ) {
-        unsafe {
-            self.device.cmd_bind_descriptor_sets(
-                self.frame.command_buffer,
-                bind_point,
-                pipeline_layout,
-                0,
-                descriptor_sets,
-                &[],
-            )
-        };
+        self.device.bind_descriptor_sets(
+            self.command_buffer(),
+            bind_point,
+            pipeline_layout,
+            descriptor_sets,
+        );
     }
 
-    pub fn push_constant<T>(
+    pub fn bind_push_constants<T>(
         &self,
         pipeline_layout: vk::PipelineLayout,
         stages: vk::ShaderStageFlags,
         data: &[T],
     ) {
-        let ptr = core::ptr::from_ref(data);
-        let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), std::mem::size_of_val(data)) };
-        unsafe {
-            self.device.cmd_push_constants(
-                self.frame.command_buffer,
-                pipeline_layout,
-                stages,
-                0,
-                bytes,
-            )
-        };
+        self.device
+            .bind_push_constants(self.command_buffer(), pipeline_layout, stages, data);
     }
 
     pub fn set_viewports(&self, viewports: &[vk::Viewport]) {
-        unsafe {
-            self.device
-                .cmd_set_viewport(self.frame.command_buffer, 0, viewports)
-        }
+        self.device.set_viewports(self.command_buffer(), viewports)
     }
 
     pub fn set_scissors(&self, viewports: &[vk::Rect2D]) {
-        unsafe {
-            self.device
-                .cmd_set_scissor(self.frame.command_buffer, 0, viewports)
-        }
+        self.device.set_scissors(self.command_buffer(), viewports)
     }
 
-    pub fn bind_pipeline(&self, bind_point: vk::PipelineBindPoint, &pipeline: &vk::Pipeline) {
-        unsafe {
-            self.device
-                .cmd_bind_pipeline(self.frame.command_buffer, bind_point, pipeline)
-        }
+    pub fn bind_pipeline(&self, bind_point: vk::PipelineBindPoint, pipeline: &vk::Pipeline) {
+        self.device
+            .bind_pipeline(self.command_buffer(), bind_point, pipeline)
     }
 
     pub fn dispatch(&self, x: u32, y: u32, z: u32) {
-        unsafe { self.device.cmd_dispatch(self.frame.command_buffer, x, y, z) };
+        self.device.dispatch(self.command_buffer(), x, y, z)
     }
 
     pub fn end_rendering(&mut self) {
-        unsafe {
-            self.device
-                .dynamic_rendering
-                .cmd_end_rendering(self.frame.command_buffer)
-        };
+        self.device.end_rendering(self.command_buffer());
     }
 }

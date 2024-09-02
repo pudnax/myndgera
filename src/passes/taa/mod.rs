@@ -178,7 +178,7 @@ impl Taa {
             };
 
             let pipeline = state.pipeline_arena.get_pipeline(self.reproject_pipeline);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[reproject_push_constant],
@@ -219,7 +219,7 @@ impl Taa {
             };
 
             let pipeline = state.pipeline_arena.get_pipeline(self.taa_pipeline);
-            frame.push_constant(
+            frame.bind_push_constants(
                 pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 &[taa_push_constant],

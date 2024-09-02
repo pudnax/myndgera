@@ -461,6 +461,125 @@ impl Device {
         })
     }
 
+    pub fn draw(
+        &self,
+        &cbuff: &vk::CommandBuffer,
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
+        unsafe {
+            self.device.cmd_draw(
+                cbuff,
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            )
+        };
+    }
+
+    pub fn draw_indexed(
+        &self,
+        &cbuff: &vk::CommandBuffer,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    ) {
+        unsafe {
+            self.device.cmd_draw_indexed(
+                cbuff,
+                index_count,
+                instance_count,
+                first_index,
+                vertex_offset,
+                first_instance,
+            )
+        };
+    }
+
+    pub fn bind_index_buffer(&self, &cbuff: &vk::CommandBuffer, buffer: vk::Buffer, offset: u64) {
+        unsafe {
+            self.device
+                .cmd_bind_index_buffer(cbuff, buffer, offset, vk::IndexType::UINT32)
+        };
+    }
+
+    pub fn bind_vertex_buffer(&self, &cbuff: &vk::CommandBuffer, buffer: vk::Buffer) {
+        let buffers = [buffer];
+        let offsets = [0];
+        unsafe {
+            self.device
+                .cmd_bind_vertex_buffers(cbuff, 0, &buffers, &offsets)
+        };
+    }
+
+    pub fn bind_descriptor_sets(
+        &self,
+        &cbuff: &vk::CommandBuffer,
+        bind_point: vk::PipelineBindPoint,
+        pipeline_layout: vk::PipelineLayout,
+        descriptor_sets: &[vk::DescriptorSet],
+    ) {
+        unsafe {
+            self.device.cmd_bind_descriptor_sets(
+                cbuff,
+                bind_point,
+                pipeline_layout,
+                0,
+                descriptor_sets,
+                &[],
+            )
+        };
+    }
+
+    pub fn bind_push_constants<T>(
+        &self,
+        &cbuff: &vk::CommandBuffer,
+        pipeline_layout: vk::PipelineLayout,
+        stages: vk::ShaderStageFlags,
+        data: &[T],
+    ) {
+        let ptr = core::ptr::from_ref(data);
+        let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), std::mem::size_of_val(data)) };
+        unsafe {
+            self.device
+                .cmd_push_constants(cbuff, pipeline_layout, stages, 0, bytes)
+        };
+    }
+
+    pub fn set_viewports(&self, &cbuff: &vk::CommandBuffer, viewports: &[vk::Viewport]) {
+        unsafe { self.device.cmd_set_viewport(cbuff, 0, viewports) }
+    }
+
+    pub fn set_scissors(&self, &cbuff: &vk::CommandBuffer, viewports: &[vk::Rect2D]) {
+        unsafe { self.device.cmd_set_scissor(cbuff, 0, viewports) }
+    }
+
+    pub fn bind_pipeline(
+        &self,
+        &cbuff: &vk::CommandBuffer,
+        bind_point: vk::PipelineBindPoint,
+        &pipeline: &vk::Pipeline,
+    ) {
+        unsafe { self.device.cmd_bind_pipeline(cbuff, bind_point, pipeline) }
+    }
+
+    pub fn dispatch(&self, &cbuff: &vk::CommandBuffer, x: u32, y: u32, z: u32) {
+        unsafe { self.device.cmd_dispatch(cbuff, x, y, z) };
+    }
+
+    pub fn begin_rendering(&self, &cbuff: &vk::CommandBuffer, info: &vk::RenderingInfo) {
+        unsafe { self.dynamic_rendering.cmd_begin_rendering(cbuff, info) };
+    }
+
+    pub fn end_rendering(&self, &cbuff: &vk::CommandBuffer) {
+        unsafe { self.dynamic_rendering.cmd_end_rendering(cbuff) };
+    }
+
     pub fn get_info(&self) -> RendererInfo {
         RendererInfo {
             device_name: self.get_device_name().unwrap().to_string(),
