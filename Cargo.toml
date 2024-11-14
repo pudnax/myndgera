@@ -14,7 +14,7 @@ ahash = "0.8"
 notify-debouncer-full = "0.4"
 parking_lot = "0.12"
 notify = "7.0"
-shaderc = "0.8.3"
+shaderc = "0.8"
 either = "1.13.0"
 slotmap = "1.0.7"
 gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
