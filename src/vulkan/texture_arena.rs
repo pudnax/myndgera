@@ -8,7 +8,7 @@ use ash::{
 use gpu_allocator::{vulkan::Allocation, MemoryLocation};
 use slotmap::{SecondaryMap, SlotMap};
 
-use crate::align_to;
+use crate::utils::align_to;
 
 use super::Device;
 

@@ -1,24 +1,31 @@
-use core::f32;
-use std::{f32::consts::PI, mem, sync::Arc};
-
-use anyhow::{Ok, Result};
-use ash::vk;
+use anyhow::Result;
+use ash::{prelude::VkResult, vk};
 use bytemuck::{Pod, Zeroable};
 use dolly::prelude::YawPitch;
 use glam::{vec3, Mat4, Vec2, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
-use myndgera::*;
-
-use self::{
-    bloom::{Bloom, BloomParams},
+use myndgera::{
+    bytes_of, dispatch_optimal,
     math::{cos, erot, hash13, look_at, sin, smooth_floor},
-    taa::{Taa, TaaParams},
+    passes::{
+        bloom::{Bloom, BloomParams},
+        taa::{Taa, TaaParams},
+    },
+    vulkan::{
+        Buffer, FragmentOutputDesc, FragmentShaderDesc, FrameGuard, ImageHandle, RenderHandle,
+        ScreenRelation, VertexInputDesc, VertexShaderDesc, ViewTarget,
+    },
+    App, AppState, Camera, ComputeHandle, Device, Framework, KeyboardMap, RenderContext,
+    FIXED_TIME_STEP,
 };
+use std::{error::Error, f32::consts::PI, mem, sync::Arc};
+use winit::event_loop::EventLoop;
 
 const NUM_LIGHTS: u32 = 4;
 const NUM_RAYS: u32 = 12500 * NUM_LIGHTS;
 const NUM_BOUNCES: u32 = 8;
 
+// TODO: can't use scalar layout because it's not packed!
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct GpuBuffer<T: Copy, const N: usize = 1> {
@@ -83,7 +90,7 @@ struct PostProcessPC {
     hdr_storage: u32,
 }
 
-struct LineRaster {
+struct Trig {
     lines_buffer: Buffer,
     lights_buffer: Buffer,
     spawn_pass: ComputeHandle,
@@ -99,11 +106,14 @@ struct LineRaster {
     device: Arc<Device>,
 }
 
-impl Example for LineRaster {
+impl Framework for Trig {
     fn name() -> &'static str {
         "Line Rasteriazation"
     }
+
     fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
+        state.camera = Camera::new(vec3(0., 0., 10.), 0., 0.);
+
         let size = mem::size_of::<GpuBuffer<Ray, { (NUM_RAYS * NUM_BOUNCES) as usize }>>();
         let lines_buffer = ctx.device.create_buffer(
             size as u64,
@@ -163,6 +173,7 @@ impl Example for LineRaster {
         };
         let fragment_shader_desc = FragmentShaderDesc {
             shader_path: "examples/line_raster/postprocess.frag.glsl".into(),
+            ..Default::default()
         };
         let fragment_output_desc = FragmentOutputDesc {
             surface_format: ctx.swapchain.format(),
@@ -172,10 +183,10 @@ impl Example for LineRaster {
             .size(size_of::<PostProcessPC>() as _)
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
         let postprocess_pass = state.pipeline_arena.create_render_pipeline(
-            &VertexInputDesc::default(),
-            &vertex_shader_desc,
-            &fragment_shader_desc,
-            &fragment_output_desc,
+            VertexInputDesc::default(),
+            vertex_shader_desc,
+            fragment_shader_desc,
+            fragment_output_desc,
             &[push_constant_range],
             &[
                 state.texture_arena.sampled_set_layout,
@@ -206,7 +217,7 @@ impl Example for LineRaster {
             )?;
             accumulate_images.push(image);
         }
-        let view_target = ViewTarget::new(state, vk::Format::B10G11R11_UFLOAT_PACK32)?;
+        let view_target = ViewTarget::new(ctx, state, vk::Format::B10G11R11_UFLOAT_PACK32)?;
 
         let depth_image = state.texture_arena.push_image(
             image_info.format(vk::Format::R16_SFLOAT),
@@ -248,105 +259,12 @@ impl Example for LineRaster {
         })
     }
 
-    fn update(
-        &mut self,
-        ctx: &RenderContext,
-        state: &mut AppState,
-        &cbuff: &vk::CommandBuffer,
-    ) -> Result<()> {
-        let time = state.stats.time;
-        let mut lights = [Light::default(); NUM_LIGHTS as usize];
-        let make_light = |tr: Mat4, col: Vec3| Light {
-            transform: tr,
-            color: col.extend(0.),
-        };
-        let tr = |pos, i| {
-            let i = i as f32;
-            let coeffs = hash13(i + 33.42) * 2. - 1.;
-            let t = smooth_floor(time * 0.15 + 20. + i * 2.5, 3.);
-            let ax = coeffs * vec3(sin(-t), cos(t), sin(t + PI / 2.));
-            let rot = Mat4::from_axis_angle(ax.normalize(), t);
-            rot * Mat4::from_scale(Vec3::splat(3.))
-                * look_at(pos, erot(-pos * 0.5, ax.normalize(), (t) + 0.5))
-        };
-        lights[0] = make_light(tr(vec3(1., 1.5, -1.5), 0), vec3(1., 1., 1.));
-        lights[1] = make_light(tr(vec3(-1.5, 1., -1.), 1), vec3(1., 0., 0.));
-        lights[2] = make_light(tr(vec3(1.5, -1., 1.), 2), vec3(1., 0., 0.));
-        lights[3] = make_light(tr(vec3(1., -1., -1.5), 3), vec3(1., 1., 1.));
-
-        let buffer_data = GpuBuffer {
-            size: lights.len() as u32,
-            data: lights,
-        };
-        state
-            .staging_write
-            .write_buffer(self.lights_buffer.buffer, bytes_of(&buffer_data));
-
-        let extent = ctx.swapchain.extent();
-        state.camera.jitter = self
-            .taa
-            .get_jitter(state.stats.frame, extent.width, extent.height);
-
-        let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
-        let spawn_push_constant = SpawnPC {
-            num_rays: NUM_RAYS,
-            num_bounces: NUM_BOUNCES,
-            time: state.stats.time,
-            noise_offset: rand::random::<Vec2>(),
-            lights_buffer: self.lights_buffer.address,
-            line_buffer: self.lines_buffer.address,
-        };
-        ctx.device.bind_descriptor_sets(
-            &cbuff,
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            &[state.texture_arena.sampled_set],
-        );
-        ctx.device.bind_push_constants(
-            &cbuff,
-            pipeline.layout,
-            vk::ShaderStageFlags::COMPUTE,
-            bytes_of(&spawn_push_constant),
-        );
-        ctx.device
-            .bind_pipeline(&cbuff, vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
-        ctx.device
-            .dispatch(&cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
-
-        if state.input.mouse_state.left_held() {
-            let sensitivity = 0.5;
-            state.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
-                -sensitivity * state.input.mouse_state.delta.x,
-                -sensitivity * state.input.mouse_state.delta.y,
-            );
-        }
-
-        let dt = state.stats.time_delta;
-        let key_map = state.key_map.map(&state.input.keyboard_state);
-        let translation = Vec3::new(
-            key_map["move_right"],
-            key_map["move_up"],
-            -key_map["move_fwd"],
-        );
-
-        let rotation: glam::Quat = state.camera.rig.final_transform.rotation.into();
-        let move_vec = rotation * translation.clamp_length_max(1.0) * 4.0f32.powf(key_map["boost"]);
-
-        state
-            .camera
-            .rig
-            .driver_mut::<dolly::drivers::Position>()
-            .translate(move_vec * dt * 5.0);
-
-        Ok(())
-    }
-
-    fn render(
+    fn draw(
         &mut self,
         ctx: &RenderContext,
         state: &mut AppState,
         frame: &mut FrameGuard,
-    ) -> Result<()> {
+    ) -> VkResult<()> {
         let idx = frame.image_idx;
         let texture_arena = &mut state.texture_arena;
 
@@ -495,7 +413,9 @@ impl Example for LineRaster {
         {
             let texture_arena = &mut state.texture_arena;
             frame.begin_rendering(
-                ctx.swapchain.get_current_image_view(),
+                &ctx.swapchain.images[frame.image_idx],
+                &ctx.swapchain.views[frame.image_idx],
+                vk::ImageLayout::GENERAL,
                 vk::AttachmentLoadOp::DONT_CARE,
                 [0., 0.025, 0.025, 1.0],
             );
@@ -524,13 +444,105 @@ impl Example for LineRaster {
 
         Ok(())
     }
+
+    fn update(
+        &mut self,
+        ctx: &RenderContext,
+        state: &mut AppState,
+        cbuff: &vk::CommandBuffer,
+    ) -> Result<()> {
+        let time = state.time;
+        let mut lights = [Light::default(); NUM_LIGHTS as usize];
+        let make_light = |tr: Mat4, col: Vec3| Light {
+            transform: tr,
+            color: col.extend(0.),
+        };
+        let tr = |pos, i| {
+            let i = i as f32;
+            let coeffs = hash13(i + 33.42) * 2. - 1.;
+            let t = smooth_floor(time * 0.15 + 20. + i * 2.5, 3.);
+            let ax = coeffs * vec3(sin(-t), cos(t), sin(t + PI / 2.));
+            let rot = Mat4::from_axis_angle(ax.normalize(), t);
+            rot * Mat4::from_scale(Vec3::splat(3.))
+                * look_at(pos, erot(-pos * 0.5, ax.normalize(), (t) + 0.5))
+        };
+        lights[0] = make_light(tr(vec3(1., 1.5, -1.5), 0), vec3(1., 1., 1.));
+        lights[1] = make_light(tr(vec3(-1.5, 1., -1.), 1), vec3(1., 0., 0.));
+        lights[2] = make_light(tr(vec3(1.5, -1., 1.), 2), vec3(1., 0., 0.));
+        lights[3] = make_light(tr(vec3(1., -1., -1.5), 3), vec3(1., 1., 1.));
+
+        let buffer_data = GpuBuffer {
+            size: lights.len() as u32,
+            data: lights,
+        };
+        state
+            .staging_write
+            .write_buffer(self.lights_buffer.buffer, bytes_of(&buffer_data));
+
+        let extent = ctx.swapchain.extent();
+        state.camera.jitter = self
+            .taa
+            .get_jitter(state.frame, extent.width, extent.height);
+
+        let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
+        let spawn_push_constant = SpawnPC {
+            num_rays: NUM_RAYS,
+            num_bounces: NUM_BOUNCES,
+            time: state.time,
+            noise_offset: rand::random::<Vec2>(),
+            lights_buffer: self.lights_buffer.address,
+            line_buffer: self.lines_buffer.address,
+        };
+        ctx.device.bind_descriptor_sets(
+            &cbuff,
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            &[state.texture_arena.sampled_set],
+        );
+        ctx.device.bind_push_constants(
+            &cbuff,
+            pipeline.layout,
+            vk::ShaderStageFlags::COMPUTE,
+            bytes_of(&spawn_push_constant),
+        );
+        ctx.device
+            .bind_pipeline(&cbuff, vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
+        ctx.device
+            .dispatch(&cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
+
+        if state.input.mouse_state.left_held() {
+            let sensitivity = 0.5;
+            state.camera.rig.driver_mut::<YawPitch>().rotate_yaw_pitch(
+                -sensitivity * state.input.mouse_state.delta.x,
+                -sensitivity * state.input.mouse_state.delta.y,
+            );
+        }
+
+        let dt = FIXED_TIME_STEP as f32;
+        let key_map = state.key_map.map(&state.input.keyboard_state);
+        let translation = Vec3::new(
+            key_map["move_right"],
+            key_map["move_up"],
+            -key_map["move_fwd"],
+        );
+
+        let rotation: glam::Quat = state.camera.rig.final_transform.rotation.into();
+        let move_vec = rotation * translation.clamp_length_max(1.0) * 4.0f32.powf(key_map["boost"]);
+
+        state
+            .camera
+            .rig
+            .driver_mut::<dolly::drivers::Position>()
+            .translate(move_vec * dt * 5.0);
+        Ok(())
+    }
 }
 
-fn main() -> Result<()> {
-    let event_loop = winit::event_loop::EventLoop::with_user_event().build()?;
+fn main() -> Result<(), Box<dyn Error>> {
+    let event_loop = EventLoop::with_user_event().build()?;
 
-    let camera = Camera::new(vec3(0., 0., 10.), 0., 0.);
-    let mut app = App::<LineRaster>::new(event_loop.create_proxy(), Some(camera));
+    let mut app = App::<Trig>::new(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
+
     Ok(())
 }

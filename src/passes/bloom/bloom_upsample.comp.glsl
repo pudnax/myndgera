@@ -5,8 +5,6 @@
 #extension GL_EXT_shader_image_load_formatted : require
 #extension GL_EXT_samplerless_texture_functions : require
 
-#include <textures.glsl>
-
 layout(scalar, push_constant) uniform PushConstant {
     uvec2 source_dim;
     uvec2 target_dim;
@@ -25,6 +23,8 @@ layout(set = 0, binding = 1) uniform texture2D gtextures[];
 layout(set = 1, binding = 0) writeonly coherent
     restrict uniform image2D gstorage[];
 
+#include <textures.glsl>
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 vec4 tex_lod(uint tex_id, vec2 uv) {
@@ -35,7 +35,9 @@ vec4 tex_lod(uint tex_id, vec2 uv) {
 
 void main() {
     const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(gid, pc.target_dim))) { return; }
+    if (any(greaterThanEqual(gid, pc.target_dim))) {
+        return;
+    }
 
     vec2 texel = 1.0 / pc.source_dim;
 

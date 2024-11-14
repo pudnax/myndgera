@@ -4,12 +4,12 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_samplerless_texture_functions : require
 
+layout(set = 0, binding = 0) uniform sampler gsamplers[];
+layout(set = 0, binding = 1) uniform texture2D gtextures[];
+
 #include "shared.glsl"
 #include <hashes.glsl>
 #include <textures.glsl>
-
-layout(set = 0, binding = 0) uniform sampler gsamplers[];
-layout(set = 0, binding = 1) uniform texture2D gtextures[];
 
 layout(scalar, push_constant) uniform PushConstant {
     uint num_rays;
@@ -74,8 +74,12 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx == 0) { pc.rays_ptr.len = pc.num_rays * pc.num_bounces; }
-    if (idx > pc.num_rays) { return; }
+    if (idx == 0) {
+        pc.rays_ptr.len = pc.num_rays * pc.num_bounces;
+    }
+    if (idx > pc.num_rays) {
+        return;
+    }
     init_seed(idx, pc.time);
     uint ray_idx = idx * pc.num_bounces;
     for (int i = 0; i < pc.num_bounces; ++i) {
@@ -97,7 +101,9 @@ void main() {
     float throughput = 1.;
     for (int i = 0; i < pc.num_bounces; ++i) {
         vec2 hit = trace(origin, dir);
-        if (hit.y <= 0.) { break; }
+        if (hit.y <= 0.) {
+            break;
+        }
         vec3 end = origin + dir * hit.x;
         vec3 nor = get_norm(end);
 

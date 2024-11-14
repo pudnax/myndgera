@@ -1,9 +1,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use anyhow::Result;
-use ash::vk;
+use ash::vk::{self, Extent2D};
 
-use crate::{AppState, ImageHandle};
+use crate::{AppState, RenderContext};
+
+use super::{ImageHandle, ScreenRelation};
 
 pub struct PostProcessWrite<'a> {
     pub source: &'a ImageHandle,
@@ -16,13 +18,13 @@ pub struct ViewTarget {
 }
 
 impl ViewTarget {
-    pub fn new(state: &mut AppState, format: vk::Format) -> Result<Self> {
-        let [width, height] = state.stats.wh;
+    pub fn new(ctx: &RenderContext, state: &mut AppState, format: vk::Format) -> Result<Self> {
+        let Extent2D { width, height } = ctx.swapchain.extent();
         let image_info = vk::ImageCreateInfo::default()
             .format(format)
             .extent(vk::Extent3D {
-                width: width as u32,
-                height: height as u32,
+                width,
+                height,
                 depth: 1,
             })
             .image_type(vk::ImageType::TYPE_2D)
@@ -33,13 +35,13 @@ impl ViewTarget {
             .tiling(vk::ImageTiling::OPTIMAL);
         let a = state.texture_arena.push_image(
             image_info,
-            crate::ScreenRelation::Identity,
+            ScreenRelation::Identity,
             &[],
             Some("View Target A"),
         )?;
         let b = state.texture_arena.push_image(
             image_info,
-            crate::ScreenRelation::Identity,
+            ScreenRelation::Identity,
             &[],
             Some("View Target B"),
         )?;

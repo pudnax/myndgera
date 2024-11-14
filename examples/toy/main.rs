@@ -1,126 +1,150 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
-use ash::vk;
-use myndgera::*;
+use ash::{
+    prelude::VkResult,
+    vk::{self, Extent2D},
+};
+use glam::{vec2, Vec2, Vec3};
+use myndgera::{
+    vulkan::{
+        FragmentOutputDesc, FragmentShaderDesc, FrameGuard, RenderHandle, VertexInputDesc,
+        VertexShaderDesc,
+    },
+    App, AppState, Framework, RenderContext,
+};
+use std::error::Error;
+use winit::event_loop::EventLoop;
 
-struct Toy {
-    render_pipeline: RenderHandle,
-    compute_pipeline: ComputeHandle,
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct PushConstant {
+    resolution: Vec2,
+    pos: Vec3,
+    mouse: Vec2,
+    mouse_pressed: u32,
+    time: f32,
+    time_delta: f32,
+    frame: u32,
 }
 
-impl Example for Toy {
-    fn name() -> &'static str {
-        "Toy"
-    }
+struct Trig {
+    push_constant: PushConstant,
+    render_pipeline: RenderHandle,
+}
+
+impl Framework for Trig {
     fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
+        let push_constant = PushConstant {
+            pos: Vec3::from([0.; 3]),
+            resolution: vec2(
+                ctx.swapchain.extent.width as f32,
+                ctx.swapchain.extent.height as f32,
+            ),
+            mouse: state.input.mouse_state.screen_position,
+            mouse_pressed: state.input.mouse_state.left_pressed() as u32,
+            time: state.time,
+            frame: state.frame,
+            time_delta: 1. / 60.,
+        };
         let vertex_shader_desc = VertexShaderDesc {
             shader_path: "examples/toy/shader.vert".into(),
             ..Default::default()
         };
         let fragment_shader_desc = FragmentShaderDesc {
             shader_path: "examples/toy/shader.frag".into(),
+            ..Default::default()
         };
         let fragment_output_desc = FragmentOutputDesc {
             surface_format: ctx.swapchain.format(),
             ..Default::default()
         };
         let push_constant_range = vk::PushConstantRange::default()
-            .size(size_of::<GlobalStats>() as _)
+            .size(size_of::<PushConstant>() as _)
             .stage_flags(
                 vk::ShaderStageFlags::VERTEX
                     | vk::ShaderStageFlags::FRAGMENT
                     | vk::ShaderStageFlags::COMPUTE,
             );
         let render_pipeline = state.pipeline_arena.create_render_pipeline(
-            &VertexInputDesc::default(),
-            &vertex_shader_desc,
-            &fragment_shader_desc,
-            &fragment_output_desc,
-            &[push_constant_range],
-            &[state.texture_arena.sampled_set_layout],
-        )?;
-
-        let compute_pipeline = state.pipeline_arena.create_compute_pipeline(
-            "examples/toy/shader.comp",
+            VertexInputDesc::default(),
+            vertex_shader_desc,
+            fragment_shader_desc,
+            fragment_output_desc,
             &[push_constant_range],
             &[state.texture_arena.sampled_set_layout],
         )?;
         Ok(Self {
+            push_constant,
             render_pipeline,
-            compute_pipeline,
         })
     }
 
-    fn render(
+    fn draw(
         &mut self,
         ctx: &RenderContext,
         state: &mut AppState,
         frame: &mut FrameGuard,
-    ) -> Result<()> {
-        let stages = vk::ShaderStageFlags::VERTEX
-            | vk::ShaderStageFlags::FRAGMENT
-            | vk::ShaderStageFlags::COMPUTE;
-        let pipeline = state.pipeline_arena.get_pipeline(self.compute_pipeline);
-        frame.bind_push_constants(pipeline.layout, stages, &[state.stats]);
-        frame.bind_descriptor_sets(
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            &[state.texture_arena.sampled_set],
-        );
-        frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
-        const SUBGROUP_SIZE: u32 = 16;
-        let extent = ctx.swapchain.extent();
-        frame.dispatch(
-            dispatch_optimal(extent.width, SUBGROUP_SIZE),
-            dispatch_optimal(extent.height, SUBGROUP_SIZE),
-            1,
-        );
-
-        let memory_barrier = vk::MemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS);
-        ctx.device.pipeline_barrier(
-            frame.command_buffer(),
-            &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier)),
-        );
-
+    ) -> VkResult<()> {
         frame.begin_rendering(
-            ctx.swapchain.get_current_image_view(),
+            &ctx.swapchain.images[frame.image_idx],
+            &ctx.swapchain.views[frame.image_idx],
+            vk::ImageLayout::GENERAL,
             vk::AttachmentLoadOp::CLEAR,
-            [0., 0.025, 0.025, 1.0],
+            [1., 1., 1., 1.],
         );
+
         let pipeline = state.pipeline_arena.get_pipeline(self.render_pipeline);
+        frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
         frame.bind_push_constants(
             pipeline.layout,
             vk::ShaderStageFlags::VERTEX
                 | vk::ShaderStageFlags::FRAGMENT
                 | vk::ShaderStageFlags::COMPUTE,
-            &[state.stats],
+            &[self.push_constant],
         );
         frame.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout,
             &[state.texture_arena.sampled_set],
         );
-        frame.bind_pipeline(vk::PipelineBindPoint::GRAPHICS, &pipeline.pipeline);
+        frame.draw(3, 1, 0, 0);
 
-        frame.draw(3, 0, 1, 0);
         frame.end_rendering();
 
         Ok(())
     }
+
+    fn update(
+        &mut self,
+        ctx: &RenderContext,
+        state: &mut AppState,
+        _cbuff: &vk::CommandBuffer,
+    ) -> Result<()> {
+        state.input.process_position(&mut self.push_constant.pos);
+        let Extent2D { width, height } = ctx.swapchain.extent;
+        self.push_constant.resolution.x = width as f32;
+        self.push_constant.resolution.y = height as f32;
+        self.push_constant.time = state.time;
+        self.push_constant.frame = state.frame;
+        self.push_constant.time_delta = 1. / 60.;
+        self.push_constant.mouse = state.input.mouse_state.screen_position / 2.;
+        self.push_constant.mouse_pressed = state.input.mouse_state.left_held() as u32;
+
+        if state
+            .input
+            .keyboard_state
+            .is_down(winit::keyboard::KeyCode::F6)
+        {
+            println!("{:?}", self.push_constant);
+        }
+        Ok(())
+    }
 }
 
-fn main() -> Result<()> {
-    let event_loop = winit::event_loop::EventLoop::with_user_event().build()?;
+fn main() -> Result<(), Box<dyn Error>> {
+    let event_loop = EventLoop::with_user_event().build()?;
 
-    let shader_dir = PathBuf::new().join(SHADER_FOLDER);
-    if !shader_dir.is_dir() {
-        default_shaders::create_default_shaders(&shader_dir)?;
-    }
-
-    let mut app = App::<Toy>::new(event_loop.create_proxy(), None);
+    let mut app = App::<Trig>::new(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
+
     Ok(())
 }

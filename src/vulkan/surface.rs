@@ -2,13 +2,13 @@ use std::ops::Deref;
 
 use anyhow::Result;
 use ash::{khr, vk};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use super::device::Device;
+use super::Device;
 
 pub struct Surface {
-    loader: khr::surface::Instance,
-    inner: vk::SurfaceKHR,
+    pub loader: khr::surface::Instance,
+    pub inner: vk::SurfaceKHR,
 }
 
 impl Deref for Surface {
@@ -27,13 +27,12 @@ pub struct SurfaceInfo {
 
 impl Surface {
     pub fn new(
-        entry: &ash::Entry,
-        instance: &ash::Instance,
+        instance: &crate::vulkan::Instance,
         handle: &(impl HasDisplayHandle + HasWindowHandle),
     ) -> Result<Self> {
         let inner = unsafe {
             ash_window::create_surface(
-                entry,
+                &instance.entry,
                 instance,
                 handle.display_handle()?.as_raw(),
                 handle.window_handle()?.as_raw(),
@@ -41,7 +40,7 @@ impl Surface {
             )?
         };
 
-        let loader = khr::surface::Instance::new(entry, instance);
+        let loader = khr::surface::Instance::new(&instance.entry, instance);
 
         Ok(Surface { inner, loader })
     }

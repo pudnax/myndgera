@@ -1,9 +1,9 @@
-#include <textures.glsl>
-
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
 layout(set = 1, binding = 0) writeonly coherent
     restrict uniform image2D gstorage[];
+
+#include <textures.glsl>
 
 layout(scalar, push_constant) uniform PushConstant {
     uint source_img;

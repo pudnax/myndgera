@@ -5,14 +5,14 @@
 #extension GL_EXT_shader_image_load_formatted : require
 #extension GL_EXT_samplerless_texture_functions : require
 
-#include "shared.glsl"
-#include <camera.glsl>
-
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
 layout(set = 1, binding = 0) coherent restrict uniform uimage2D gstorage_read[];
 layout(set = 1, binding = 0) writeonly coherent
     restrict uniform image2D gstorage_write[];
+
+#include "shared.glsl"
+#include <camera.glsl>
 
 layout(scalar, push_constant) uniform PushConstant {
     uint target_img;
@@ -60,7 +60,9 @@ vec3 wire_trace(vec3 eye, vec3 dir) {
             d = 0.025 * s;
         }
         t += d * s; // * 0.85;
-        if (t > 500.) { break; }
+        if (t > 500.) {
+            break;
+        }
     }
     return clamp(wire * wire_color, 0.0, 1.0);
 }
@@ -72,7 +74,9 @@ void main() {
     RESOLUTION = dims;
     vec2 pix = gl_GlobalInvocationID.xy;
     vec2 uv = cs_to_uv(pix, dims);
-    if (pix.x >= dims.x || pix.y >= dims.y) { return; }
+    if (pix.x >= dims.x || pix.y >= dims.y) {
+        return;
+    }
     ivec2 ipix = ivec2(pix);
 
     vec4 view_pos = pc.camera.cam.clip_to_world * vec4(uv, 1., 1.);

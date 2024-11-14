@@ -22,6 +22,7 @@ pub enum RecordEvent {
 pub struct Recorder {
     pub sender: Sender<RecordEvent>,
     ffmpeg_installed: bool,
+    #[allow(dead_code)]
     pub ffmpeg_version: String,
     pub thread_handle: Option<JoinHandle<()>>,
     is_active: bool,
@@ -174,7 +175,7 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                     let data = match frame.map_memory() {
                         Some(data) => data,
                         None => {
-                            log::error!("Failed to map memory");
+                            tracing::error!("Failed to map memory");
                             continue;
                         }
                     };
@@ -200,12 +201,13 @@ fn record_thread(rx: Receiver<RecordEvent>) {
                 let data = match frame.map_memory() {
                     Some(data) => data,
                     None => {
-                        log::error!("Failed to map memory");
+                        tracing::error!("Failed to map memory");
                         continue;
                     }
                 };
 
-                let _ = save_screenshot(data, image_dimensions).map_err(|err| log::error!("{err}"));
+                let _ =
+                    save_screenshot(data, image_dimensions).map_err(|err| tracing::error!("{err}"));
             }
             RecordEvent::CloseThread => {
                 return;

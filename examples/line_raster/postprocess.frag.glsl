@@ -3,25 +3,16 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_shader_image_load_formatted : require
 
-#include "shared.glsl"
-#include <camera.glsl>
-#include <prelude.glsl>
-#include <textures.glsl>
-
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
-vec4 Tex(uint tex_id, uint smp_id, vec2 uv) {
-    return texture(
-        nonuniformEXT(sampler2D(gtextures[tex_id], gsamplers[smp_id])), uv);
-}
-vec4 Tex(uint tex_id, uint smp_id) { return Tex(tex_id, smp_id, in_uv); }
-vec4 TexLinear(uint tex_id, vec2 uv) { return Tex(tex_id, LINEAR_SAMPL, uv); }
-vec4 TexLinear(uint tex_id) { return Tex(tex_id, LINEAR_SAMPL, in_uv); }
-vec4 TexNear(uint tex_id, vec2 uv) { return Tex(tex_id, NEAREST_SAMPL, uv); }
-vec4 TexNear(uint tex_id) { return Tex(tex_id, NEAREST_SAMPL, in_uv); }
+
+#include "shared.glsl"
+#include <camera.glsl>
+#include <prelude.glsl>
+#include <textures.glsl>
 
 layout(set = 1, binding = 0) uniform readonly image2D gstorage[];
 
@@ -61,7 +52,8 @@ vec3 PBRNeutralToneMapping(vec3 color) {
     color -= offset;
 
     float peak = max(color.r, max(color.g, color.b));
-    if (peak < startCompression) return color;
+    if (peak < startCompression)
+        return color;
 
     const float d = 1. - startCompression;
     float newPeak = 1. - d * d / (peak + d - startCompression);

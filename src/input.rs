@@ -1,5 +1,5 @@
 use ahash::AHashMap;
-use glam::{vec2, Vec2};
+use glam::{vec2, Vec2, Vec3};
 use winit::{
     event::{DeviceEvent, ElementState, KeyEvent, MouseButton, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -227,7 +227,7 @@ impl Input {
         }
     }
 
-    pub fn process_position(&self, pos: &mut [f32; 3]) {
+    pub fn process_position(&self, pos: &mut Vec3) {
         let keyb = &self.keyboard_state;
         let key = |key| keyb.is_down_f32(key);
 

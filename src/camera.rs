@@ -2,7 +2,7 @@ use dolly::{
     drivers::{Position, Smooth, YawPitch},
     rig::CameraRig,
 };
-use glam::{Mat4, Quat, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
 #[repr(C)]
 #[derive(Copy, Default, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -18,8 +18,6 @@ pub struct CameraUniform {
 #[derive(Debug)]
 pub struct Camera {
     pub rig: CameraRig,
-    pub position: Vec3,
-    pub rotation: Quat,
     pub aspect: f32,
     pub jitter: Vec2,
 }
@@ -37,10 +35,17 @@ impl Camera {
         Self {
             rig,
             aspect: 1.25,
-            position,
-            rotation: Quat::IDENTITY,
             jitter: Vec2::ZERO,
         }
+    }
+
+    pub fn set_position(&mut self, pos: Vec3) {
+        self.rig.driver_mut::<dolly::drivers::Position>().position = pos.into();
+    }
+
+    pub fn set_rotation(&mut self, yaw: f32, pitch: f32) {
+        let yaw_pitch = YawPitch::new().yaw_degrees(yaw).pitch_degrees(pitch);
+        *self.rig.driver_mut::<dolly::drivers::YawPitch>() = yaw_pitch;
     }
 
     pub fn build_projection_view_matrix(&self) -> (Mat4, Mat4) {

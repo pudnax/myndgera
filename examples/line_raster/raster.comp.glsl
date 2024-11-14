@@ -5,16 +5,16 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_samplerless_texture_functions : require
 
-#include "./shared.glsl"
-#include <camera.glsl>
-#include <textures.glsl>
-
 layout(set = 0, binding = 0) uniform sampler gsamplers[];
 layout(set = 0, binding = 1) uniform texture2D gtextures[];
 layout(set = 1, binding = 0, r32ui) uniform coherent
     restrict uimage2D gstorage[];
 layout(set = 1, binding = 0, r16f) uniform coherent
     restrict image2D gstoragef[];
+
+#include "./shared.glsl"
+#include <camera.glsl>
+#include <textures.glsl>
 
 layout(scalar, push_constant) uniform PushConstant {
     uint red_img;
@@ -78,7 +78,9 @@ void naive(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims, float start_depth,
     for (float s = 0; s < ray_len; s += step) {
         vec2 p = ray_start + ray_dir * s;
         ivec2 pix = ivec2(p);
-        if (!in_bounds(pix, dims)) { continue; }
+        if (!in_bounds(pix, dims)) {
+            continue;
+        }
         float curr_depth = mix(start_depth, end_depth, s / ray_len);
         float depth = imageLoad(gstoragef[pc.depth_img], pix).x;
         if (curr_depth > depth) {
@@ -105,12 +107,16 @@ void dda(vec2 ray_start, vec2 ray_end, Ray ray, vec2 dims) {
 
     for (int i = 0; i < 2500; i++) {
         vec2 len = ray_start - map_pos;
-        if (dot(len, len) > ray_len_squared) { break; }
+        if (dot(len, len) > ray_len_squared) {
+            break;
+        }
 
         bvec2 mask = lessThanEqual(side_dist.xy, side_dist.yx);
         side_dist += vec2(mask) * delta_dist;
         map_pos += ivec2(vec2(mask)) * ray_step;
-        if (!in_bounds(map_pos, dims)) { continue; }
+        if (!in_bounds(map_pos, dims)) {
+            continue;
+        }
 
         vec3 col = ray.color.rgb * ray.color.w;
         draw_point(map_pos, col);
@@ -123,17 +129,23 @@ void main() {
     uvec2 dims = imageSize(gstorage[pc.red_img]);
 
     uint idx = gl_GlobalInvocationID.x;
-    if (idx > pc.rays_ptr.len) { return; }
+    if (idx > pc.rays_ptr.len) {
+        return;
+    }
 
     Ray ray = pc.rays_ptr.rays[idx];
     vec3 gray_start = ray.start.xyz;
     vec3 gray_end = ray.end.xyz;
-    if (gray_start == vec3(0) && gray_end == vec3(0.)) { return; }
+    if (gray_start == vec3(0) && gray_end == vec3(0.)) {
+        return;
+    }
 
     vec4 cray_start = project(pc.camera.cam.world_to_clip, gray_start);
     vec4 cray_end = project(pc.camera.cam.world_to_clip, gray_end);
 
-    if (!in_clip_space(cray_start) && !in_clip_space(cray_end)) { return; }
+    if (!in_clip_space(cray_start) && !in_clip_space(cray_end)) {
+        return;
+    }
 
     vec2 ray_start = ndc_to_raster(cray_start, dims);
     vec2 ray_end = ndc_to_raster(cray_end, dims);

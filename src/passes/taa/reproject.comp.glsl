@@ -5,6 +5,10 @@
 #extension GL_EXT_shader_image_load_formatted : require
 #extension GL_EXT_samplerless_texture_functions : require
 
+layout(set = 0, binding = 0) uniform sampler gsamplers[];
+layout(set = 0, binding = 1) uniform texture2D gtextures[];
+layout(set = 1, binding = 0) coherent restrict uniform image2D gstorage[];
+
 #include <camera.glsl>
 #include <textures.glsl>
 
@@ -14,10 +18,6 @@ layout(scalar, push_constant) uniform PushConstant {
     CameraBuf camera_ptr;
 }
 pc;
-
-layout(set = 0, binding = 0) uniform sampler gsamplers[];
-layout(set = 0, binding = 1) uniform texture2D gtextures[];
-layout(set = 1, binding = 0) coherent restrict uniform image2D gstorage[];
 
 vec3 ndc_from_uv_raw_depth(vec2 uv, float raw_depth) {
     return vec3(uv.x * 2. - 1., (1. - uv.y) * 2. - 1., raw_depth);
@@ -36,7 +36,9 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main() {
     const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     uvec2 dims = imageSize(gstorage[pc.motion_img]);
-    if (any(greaterThanEqual(gid, dims))) { return; }
+    if (any(greaterThanEqual(gid, dims))) {
+        return;
+    }
 
     vec2 uv = (vec2(gid) + 0.5) / vec2(dims);
 

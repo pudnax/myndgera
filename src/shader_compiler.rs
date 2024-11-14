@@ -40,9 +40,7 @@ impl ShaderCompiler {
                     let include_path = path.canonicalize().unwrap();
                     {
                         let mut watcher = watcher_copy.watcher.lock();
-                        let _ = watcher
-                            .watcher()
-                            .watch(&include_path, notify::RecursiveMode::NonRecursive);
+                        let _ = watcher.watch(&include_path, notify::RecursiveMode::NonRecursive);
                     }
                     {
                         let mut mapping = watcher_copy.include_mapping.lock();
@@ -76,6 +74,7 @@ impl ShaderCompiler {
             &source,
             kind,
             path.as_ref().file_name().and_then(|s| s.to_str()).unwrap(),
+            // TODO: Don't use fixed entry point in the future
             "main",
             Some(&self.options),
         )?)

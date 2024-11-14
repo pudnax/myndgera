@@ -1,10 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use gpu_allocator::{
-    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
+    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
     MemoryLocation,
 };
 use parking_lot::Mutex;
-use std::marker::PhantomData;
+use std::{collections::HashSet, marker::PhantomData};
 use std::{
     ffi::{CStr, CString},
     mem::ManuallyDrop,
@@ -17,7 +17,8 @@ use ash::{
     vk::{self, Handle},
 };
 
-use crate::{align_to, ManagedImage};
+use super::{Instance, ManagedImage, Surface};
+use crate::{align_to, utils};
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
@@ -43,6 +44,207 @@ impl std::ops::Deref for Device {
 }
 
 impl Device {
+    pub(crate) fn create_with_queues(
+        instance: &Instance,
+        surface: &Surface,
+    ) -> Result<(Device, vk::Queue)> {
+        let required_device_extensions = [
+            khr::swapchain::NAME,
+            ext::graphics_pipeline_library::NAME,
+            khr::pipeline_library::NAME,
+            // TODO: consider dynamic_rendering_local_read
+            khr::dynamic_rendering::NAME,
+            ext::extended_dynamic_state2::NAME,
+            ext::extended_dynamic_state::NAME,
+            khr::synchronization2::NAME,
+            khr::buffer_device_address::NAME,
+            khr::create_renderpass2::NAME,
+            ext::descriptor_indexing::NAME,
+            khr::format_feature_flags2::NAME,
+            ext::shader_atomic_float::NAME,
+            ext::scalar_block_layout::NAME,
+        ];
+        let required_device_extensions_set = HashSet::from(required_device_extensions);
+
+        let devices = unsafe { instance.enumerate_physical_devices() }?;
+        let (pdevice, main_queue_family_idx, transfer_queue_family_idx) =
+            devices
+                .into_iter()
+                .find_map(|device| {
+                    let extensions =
+                        unsafe { instance.enumerate_device_extension_properties(device) }.ok()?;
+                    let extensions: HashSet<_> = extensions
+                        .iter()
+                        .map(|x| x.extension_name_as_c_str().unwrap())
+                        .collect();
+                    let missing = required_device_extensions_set.difference(&extensions);
+                    if missing.count() > 0 {
+                        return None;
+                    }
+
+                    use vk::QueueFlags as QF;
+                    let queue_properties =
+                        unsafe { instance.get_physical_device_queue_family_properties(device) };
+                    let main_queue_idx =
+                        queue_properties
+                            .iter()
+                            .enumerate()
+                            .find_map(|(family_idx, properties)| {
+                                let family_idx = family_idx as u32;
+
+                                let queue_support = properties
+                                    .queue_flags
+                                    .contains(QF::GRAPHICS | QF::COMPUTE | QF::TRANSFER);
+                                let surface_support =
+                                    surface.get_device_surface_support(device, family_idx);
+                                (queue_support && surface_support).then_some(family_idx)
+                            });
+
+                    let transfer_queue_idx = queue_properties.iter().enumerate().find_map(
+                        |(family_idx, properties)| {
+                            let family_idx = family_idx as u32;
+                            let queue_support = properties.queue_flags.contains(QF::TRANSFER)
+                                && !properties.queue_flags.contains(QF::GRAPHICS);
+                            (Some(family_idx) != main_queue_idx && queue_support)
+                                .then_some(family_idx)
+                        },
+                    )?;
+
+                    Some((device, main_queue_idx?, transfer_queue_idx))
+                })
+                .context("Failed to find suitable device.")?;
+
+        let queue_infos = [
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(main_queue_family_idx)
+                .queue_priorities(&[1.0]),
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(transfer_queue_family_idx)
+                .queue_priorities(&[0.5]),
+        ];
+
+        let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
+
+        let mut feature_virtual_pointers = vk::PhysicalDeviceVariablePointersFeatures::default()
+            .variable_pointers(true)
+            .variable_pointers_storage_buffer(true);
+        let mut feature_scalar_layout =
+            vk::PhysicalDeviceScalarBlockLayoutFeatures::default().scalar_block_layout(true);
+        let mut feature_atomic_float = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+            .shader_image_float32_atomics(true);
+        let mut feature_dynamic_state =
+            vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT::default();
+        let mut feature_descriptor_indexing =
+            vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+                .runtime_descriptor_array(true)
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_storage_image_array_non_uniform_indexing(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true)
+                .shader_uniform_buffer_array_non_uniform_indexing(true)
+                .descriptor_binding_storage_image_update_after_bind(true)
+                .descriptor_binding_sampled_image_update_after_bind(true)
+                .descriptor_binding_partially_bound(true)
+                .descriptor_binding_variable_descriptor_count(true)
+                .descriptor_binding_update_unused_while_pending(true);
+        let mut feature_buffer_device_address =
+            vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
+        let mut feature_synchronization2 =
+            vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+        let mut feature_pipeline_library =
+            vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT::default()
+                .graphics_pipeline_library(true);
+        let mut feature_dynamic_rendering =
+            vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
+
+        let mut features = vk::PhysicalDeviceFeatures::default()
+            .shader_storage_image_write_without_format(true)
+            .shader_storage_image_read_without_format(true)
+            .shader_int64(true);
+        if cfg!(debug_assertions) {
+            features.robust_buffer_access = 1;
+        }
+
+        let mut default_features = vk::PhysicalDeviceFeatures2::default()
+            .features(features)
+            .push_next(&mut feature_virtual_pointers)
+            .push_next(&mut feature_descriptor_indexing)
+            .push_next(&mut feature_buffer_device_address)
+            .push_next(&mut feature_synchronization2)
+            .push_next(&mut feature_scalar_layout)
+            .push_next(&mut feature_dynamic_state)
+            .push_next(&mut feature_pipeline_library)
+            .push_next(&mut feature_atomic_float)
+            .push_next(&mut feature_dynamic_rendering);
+
+        let device_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_infos)
+            .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut default_features);
+        let device = unsafe { instance.inner.create_device(pdevice, &device_info, None) }?;
+
+        let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+
+        let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
+
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.inner.clone(),
+            device: device.clone(),
+            physical_device: pdevice,
+            debug_settings: gpu_allocator::AllocatorDebugSettings::default(),
+            buffer_device_address: true,
+            allocation_sizes: gpu_allocator::AllocationSizes::default(),
+        })?;
+
+        let mut descriptor_indexing_props =
+            vk::PhysicalDeviceDescriptorIndexingProperties::default();
+        let mut device_properties =
+            vk::PhysicalDeviceProperties2::default().push_next(&mut descriptor_indexing_props);
+        unsafe { instance.get_physical_device_properties2(pdevice, &mut device_properties) };
+
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+                    .queue_family_index(main_queue_family_idx),
+                None,
+            )?
+        };
+
+        {};
+        let dbg_utils = ext::debug_utils::Device::new(&instance.inner, &device);
+
+        let device = Device {
+            physical_device: pdevice,
+            device_properties: device_properties.properties,
+            descriptor_indexing_props,
+            queue: unsafe { device.get_device_queue(main_queue_family_idx, 0) },
+            main_queue_family_idx,
+            transfer_queue_family_idx,
+            command_pool,
+            memory_properties,
+            allocator: Mutex::new(allocator),
+            device,
+            dynamic_rendering,
+            dbg_utils,
+        };
+        let transfer_queue = unsafe { device.get_device_queue(transfer_queue_family_idx, 0) };
+
+        Ok((device, transfer_queue))
+    }
+
+    pub fn wait_idle(&self) {
+        let _ = unsafe { self.device.device_wait_idle() };
+    }
+
+    pub fn wait_for_fences(
+        &self,
+        fences: &[vk::Fence],
+        wait_all: bool,
+        timeout: u64,
+    ) -> VkResult<()> {
+        unsafe { self.device.wait_for_fences(fences, wait_all, timeout) }
+    }
+
     pub fn name_object(&self, handle: impl Handle, name: &str) {
         let name = CString::new(name).unwrap();
         let _ = unsafe {
@@ -175,7 +377,17 @@ impl Device {
         Ok(view)
     }
 
-    pub fn start_command_buffer(&self) -> Result<vk::CommandBuffer> {
+    pub fn create_semaphore(&self) -> VkResult<vk::Semaphore> {
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        unsafe { self.device.create_semaphore(&semaphore_info, None) }
+    }
+
+    pub fn create_fence(&self, flags: vk::FenceCreateFlags) -> VkResult<vk::Fence> {
+        let fence_info = vk::FenceCreateInfo::default().flags(flags);
+        unsafe { self.device.create_fence(&fence_info, None) }
+    }
+
+    pub fn start_command_buffer(&self) -> VkResult<vk::CommandBuffer> {
         let command_buffer = unsafe {
             self.allocate_command_buffers(
                 &vk::CommandBufferAllocateInfo::default()
@@ -204,7 +416,7 @@ impl Device {
         self: &Arc<Self>,
         callbk: impl FnOnce(&Arc<Self>, vk::CommandBuffer) -> anyhow::Result<()>,
     ) -> Result<()> {
-        let fence = unsafe { self.create_fence(&vk::FenceCreateInfo::default(), None)? };
+        let fence = self.create_fence(vk::FenceCreateFlags::empty())?;
         let command_buffer = unsafe {
             self.allocate_command_buffers(
                 &vk::CommandBufferAllocateInfo::default()
@@ -265,6 +477,7 @@ impl Device {
         let _ = allocator.free(memory);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn blit_image(
         &self,
         command_buffer: &vk::CommandBuffer,
@@ -663,7 +876,7 @@ impl<T> BufferTyped<T> {
     pub fn map_memory(&mut self) -> Option<&mut T> {
         self.memory
             .mapped_slice_mut()
-            .map(|slice| crate::from_bytes::<T>(slice))
+            .map(|slice| utils::from_bytes::<T>(slice))
     }
 }
 

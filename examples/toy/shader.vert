@@ -1,21 +1,4 @@
 #version 460
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_nonuniform_qualifier : require
-
-layout(set = 0, binding = 0) uniform sampler gsamplers[];
-layout(set = 0, binding = 1) uniform texture2D gtextures[];
-
-layout(std430, push_constant) uniform PushConstant {
-    vec3 pos;
-    float time;
-    vec2 resolution;
-    vec2 mouse;
-    bool mouse_pressed;
-    uint frame;
-    float time_delta;
-    float record_time;
-}
-pc;
 
 layout(location = 0) out vec2 out_uv;
 

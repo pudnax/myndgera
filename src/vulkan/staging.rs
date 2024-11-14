@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 
-use crate::{Buffer, Device};
+use super::{Buffer, Device};
 
 const INITIAL_BUFFER_SIZE: u64 = 1024;
 
