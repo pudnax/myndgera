@@ -15,23 +15,16 @@ use myndgera::{
         Buffer, FragmentOutputDesc, FragmentShaderDesc, FrameGuard, ImageHandle, RenderHandle,
         ScreenRelation, VertexInputDesc, VertexShaderDesc, ViewTarget,
     },
-    App, AppState, Camera, ComputeHandle, Device, Framework, KeyboardMap, RenderContext,
+    App, AppState, Camera, ComputeHandle, Device, Framework, GpuBuffer, KeyboardMap, RenderContext,
     FIXED_TIME_STEP,
 };
-use std::{error::Error, f32::consts::PI, mem, sync::Arc};
+use std::{error::Error, f32::consts::PI, sync::Arc};
 use winit::event_loop::EventLoop;
 
-const NUM_LIGHTS: u32 = 4;
-const NUM_RAYS: u32 = 12500 * NUM_LIGHTS;
-const NUM_BOUNCES: u32 = 8;
-
-// TODO: can't use scalar layout because it's not packed!
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct GpuBuffer<T: Copy, const N: usize = 1> {
-    size: u32,
-    data: [T; N],
-}
+const NUM_LIGHTS: usize = 4;
+const NUM_RAYS: usize = 12500 * NUM_LIGHTS;
+const NUM_BOUNCES: usize = 8;
+const NUM_LINES: usize = NUM_RAYS * NUM_BOUNCES;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
@@ -114,15 +107,13 @@ impl Framework for Trig {
     fn init(ctx: &RenderContext, state: &mut AppState) -> Result<Self> {
         state.camera = Camera::new(vec3(0., 0., 10.), 0., 0.);
 
-        let size = mem::size_of::<GpuBuffer<Ray, { (NUM_RAYS * NUM_BOUNCES) as usize }>>();
         let lines_buffer = ctx.device.create_buffer(
-            size as u64,
+            GpuBuffer::<Ray, NUM_LINES>::SIZE as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER,
             MemoryLocation::GpuOnly,
         )?;
-        let size = mem::size_of::<GpuBuffer<Light, { NUM_LIGHTS as usize }>>();
         let lights_buffer = ctx.device.create_buffer(
-            size as u64,
+            GpuBuffer::<Light, NUM_LIGHTS>::SIZE as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
         )?;
@@ -328,7 +319,7 @@ impl Framework for Trig {
                 &[texture_arena.sampled_set, texture_arena.storage_set],
             );
             frame.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
-            frame.dispatch(dispatch_optimal(NUM_RAYS * NUM_BOUNCES, 64), 1, 1);
+            frame.dispatch(dispatch_optimal(NUM_LINES as u32, 64), 1, 1);
         }
 
         global_barrier(
@@ -486,8 +477,8 @@ impl Framework for Trig {
 
         let pipeline = state.pipeline_arena.get_pipeline(self.spawn_pass);
         let spawn_push_constant = SpawnPC {
-            num_rays: NUM_RAYS,
-            num_bounces: NUM_BOUNCES,
+            num_rays: NUM_RAYS as u32,
+            num_bounces: NUM_BOUNCES as u32,
             time: state.time,
             noise_offset: rand::random::<Vec2>(),
             lights_buffer: self.lights_buffer.address,
@@ -508,7 +499,7 @@ impl Framework for Trig {
         ctx.device
             .bind_pipeline(&cbuff, vk::PipelineBindPoint::COMPUTE, &pipeline.pipeline);
         ctx.device
-            .dispatch(&cbuff, dispatch_optimal(NUM_RAYS, 256), 1, 1);
+            .dispatch(&cbuff, dispatch_optimal(NUM_RAYS as u32, 256), 1, 1);
 
         if state.input.mouse_state.left_held() {
             let sensitivity = 0.5;

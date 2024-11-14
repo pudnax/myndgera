@@ -6,7 +6,7 @@ struct Light {
     vec4 color;
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 8) buffer Lights {
+layout(scalar, buffer_reference, buffer_reference_align = 8) buffer Lights {
     uint len;
     Light lights[];
 };
@@ -17,7 +17,7 @@ struct Ray {
     vec3 end;
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 8) buffer Rays {
+layout(scalar, buffer_reference, buffer_reference_align = 8) buffer Rays {
     uint len;
     Ray rays[];
 };
@@ -71,9 +71,13 @@ vec2 trace(vec3 eye, vec3 dir) {
     for (int i = 0; i < 50; i++) {
         vec3 pos = eye + dir * t;
         float d = sdf_model(pos);
-        if (abs(d) < 0.001) { return vec2(t, 1.); }
+        if (abs(d) < 0.001) {
+            return vec2(t, 1.);
+        }
         t += d;
-        if (t > 500.) { return vec2(t, 0.); }
+        if (t > 500.) {
+            return vec2(t, 0.);
+        }
     }
     return vec2(-1.);
 }

@@ -17,8 +17,8 @@ use ash::{
     vk::{self, Handle},
 };
 
-use super::{Instance, ManagedImage, Surface};
-use crate::{align_to, utils};
+use super::{Buffer, BufferTyped, Instance, ManagedImage, Surface};
+use crate::align_to;
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
@@ -838,56 +838,6 @@ pub enum AllocationResource {
     Image(vk::Image),
     Buffer(vk::Buffer),
     None,
-}
-
-pub struct Buffer {
-    pub address: u64,
-    pub size: u64,
-    pub buffer: vk::Buffer,
-    pub memory: ManuallyDrop<Allocation>,
-    device: Arc<Device>,
-}
-
-impl Buffer {
-    pub fn map_memory(&mut self) -> Option<&mut [u8]> {
-        self.memory.mapped_slice_mut()
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_buffer(self.buffer, None);
-            let memory = ManuallyDrop::take(&mut self.memory);
-            self.device.dealloc_memory(memory);
-        }
-    }
-}
-
-pub struct BufferTyped<T: 'static> {
-    pub address: u64,
-    pub buffer: vk::Buffer,
-    pub memory: ManuallyDrop<Allocation>,
-    device: Arc<Device>,
-    _marker: PhantomData<*mut T>,
-}
-
-impl<T> BufferTyped<T> {
-    pub fn map_memory(&mut self) -> Option<&mut T> {
-        self.memory
-            .mapped_slice_mut()
-            .map(|slice| utils::from_bytes::<T>(slice))
-    }
-}
-
-impl<T> Drop for BufferTyped<T> {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_buffer(self.buffer, None);
-            let memory = ManuallyDrop::take(&mut self.memory);
-            self.device.dealloc_memory(memory);
-        }
-    }
 }
 
 #[derive(Debug)]

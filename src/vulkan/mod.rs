@@ -1,3 +1,4 @@
+mod buffers;
 mod device;
 mod frame;
 mod instance;
@@ -10,6 +11,7 @@ mod view_target;
 
 use ash::vk;
 
+pub use buffers::*;
 pub use device::*;
 pub use frame::*;
 pub use instance::Instance;
